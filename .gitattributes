@@ -1,0 +1,43 @@
+# Handle line endings automatically for files detected as text
+* text=auto
+
+# Explicitly set line endings for certain file types
+*.py    text eol=lf
+*.sh    text eol=lf
+*.md    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+
+# Ensure that Jupyter Notebooks are treated as binary to prevent merge conflicts
+*.ipynb binary
+
+# Ignore differences in executable mode for all files
+* -crlf
+
+# Customize how diffs are shown for Python files
+*.py diff=python
+
+# Add linguistic support for Python
+*.py linguist-language=Python
+
+# Treat lock files as binary
+Pipfile.lock binary
+poetry.lock binary
+
+# Mark commonly compressed files as binary
+*.zip   binary
+*.tar.gz binary
+*.tgz   binary
+*.rar   binary
+*.7z    binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.pdf   binary
+*.exe   binary
+
+# Mark other binary file types
+*.dll   binary
+*.so    binary
+*.dylib binary
