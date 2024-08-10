@@ -27,7 +27,7 @@ class FastStyleTransferNode:
     def validate_image_size(image_path, min_size=(10, 10)):
         """Validates that the image at image_path is at least min_size."""
         img = tf.io.read_file(image_path)
-        img = tf.image.decode_image(img, channels=3)
+        img = tf.io.decode_image(img, channels=3, expand_animations=False)
     
         if img.shape[0] < min_size[0] or img.shape[1] < min_size[1]:
             raise ValueError(f"Image at {image_path} is too small: {img.shape}. Minimum size required: {min_size}.")
@@ -39,7 +39,7 @@ class FastStyleTransferNode:
         self.validate_image_size(image_path)
 
         img = tf.io.read_file(image_path)
-        img = tf.image.decode_image(img, channels=3)
+        img = tf.io.decode_image(img, channels=3, expand_animations=False)
 
         # Debugging: Print original image shape
         print(f"Original image dimensions: {img.shape}")
@@ -85,15 +85,14 @@ class FastStyleTransferNode:
 
     def save_numpy_as_image(self, np_array, image_path):
         """Saves a NumPy array as an image file."""
-        # Handle dimensions (assume [Height, Width, Channels])
-        if np_array.ndim == 3:
-            img = Image.fromarray((np_array * 255).astype(np.uint8))
-        elif np_array.ndim == 4:
-            # Handle the case with a batch dimension by squeezing it
-            img = Image.fromarray((np_array.squeeze(0) * 255).astype(np.uint8))
-        else:
-            raise ValueError(f"Unexpected array shape: {np_array.shape}")
+        # Ensure the NumPy array has 3 channels (RGB)
+        if np_array.ndim == 3 and np_array.shape[-1] == 1:
+            np_array = np.repeat(np_array, 3, axis=-1)  # Convert grayscale to RGB by repeating channels
+        elif np_array.ndim == 4 and np_array.shape[-1] == 1:
+            np_array = np.repeat(np_array, 3, axis=-1)  # Handle batch dimension for grayscale
 
+        # Ensure the array is in the correct range (0-255) and type (uint8)
+        img = Image.fromarray((np_array * 255).astype(np.uint8))
         img.save(image_path)
 
     def apply_style_transfer(self, content_image, style_image, output_image_size=384, target_height=1024):
@@ -119,20 +118,22 @@ class FastStyleTransferNode:
         style_img = self.load_image(style_image_path, (256, 256))
 
         # Add debug information to check dimensions before applying the model
-        print(f"Content image shape: {content_img.shape}")
-        print(f"Style image shape: {style_img.shape}")
-
-        # Check that the images have valid dimensions
-        if content_img.shape[1] <= 0 or content_img.shape[2] <= 0:
-            raise ValueError(f"Invalid content image dimensions after resize: {content_img.shape}")
-        if style_img.shape[1] <= 0 or style_img.shape[2] <= 0:
-            raise ValueError(f"Invalid style image dimensions after resize: {style_img.shape}")
+        print(f"Content image shape before model: {content_img.shape}")
+        print(f"Style image shape before model: {style_img.shape}")
 
         # Apply the style transfer
         stylized_image = hub_module(tf.constant(content_img), tf.constant(style_img))[0]
 
+        # Debug: Check the output shape and channels
+        print(f"Stylized image shape after model: {stylized_image.shape}")
+
         # Convert the stylized image back to a PyTorch tensor
         stylized_image = stylized_image.numpy()
+
+        # Force the stylized image to have 3 channels if it's grayscale
+        if stylized_image.shape[-1] == 1:
+            stylized_image = np.repeat(stylized_image, 3, axis=-1)
+
         stylized_image = torch.from_numpy(stylized_image).permute(0, 3, 1, 2)
 
         return stylized_image
