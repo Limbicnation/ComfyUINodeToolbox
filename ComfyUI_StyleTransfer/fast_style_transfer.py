@@ -4,7 +4,10 @@ import tensorflow_hub as hub
 import numpy as np
 import torch
 from PIL import Image
-from server import PromptServer  # Assuming PromptServer is available in ComfyUI
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
 
 class FastStyleTransferNode:
     CATEGORY = "Image/Style Transfer"
@@ -27,7 +30,7 @@ class FastStyleTransferNode:
     def validate_image_size(image_path, min_size=(10, 10)):
         """Validates that the image at image_path is at least min_size."""
         img = tf.io.read_file(image_path)
-        img = tf.io.decode_image(img, channels=3, expand_animations=False)
+        img = tf.image.decode_image(img, channels=3, expand_animations=False)
     
         if img.shape[0] < min_size[0] or img.shape[1] < min_size[1]:
             raise ValueError(f"Image at {image_path} is too small: {img.shape}. Minimum size required: {min_size}.")
@@ -39,21 +42,21 @@ class FastStyleTransferNode:
         self.validate_image_size(image_path)
 
         img = tf.io.read_file(image_path)
-        img = tf.io.decode_image(img, channels=3, expand_animations=False)
+        img = tf.image.decode_image(img, channels=3, expand_animations=False)
 
-        # Debugging: Print original image shape
-        print(f"Original image dimensions: {img.shape}")
+        # Logging: Print original image shape
+        logging.debug(f"Original image dimensions: {img.shape}")
 
         # Check if the image has valid dimensions
         if img.shape[0] <= 0 or img.shape[1] <= 0:
             # Provide a fallback image
-            print("Invalid image dimensions detected. Returning a placeholder image.")
+            logging.warning("Invalid image dimensions detected. Returning a placeholder image.")
             return torch.zeros((1, 3, image_size[1], image_size[0]))
 
         img = tf.image.convert_image_dtype(img, tf.float32)
 
-        # Debugging: Print target resize dimensions
-        print(f"Target resize dimensions: {image_size}")
+        # Logging: Print target resize dimensions
+        logging.debug(f"Target resize dimensions: {image_size}")
 
         # Ensure the image dimensions are valid before resizing
         if image_size[0] > 0 and image_size[1] > 0:
@@ -61,8 +64,8 @@ class FastStyleTransferNode:
         else:
             raise ValueError(f"Invalid target size for resizing: {image_size}")
 
-        # Debugging: Print resized image shape
-        print(f"Resized image dimensions: {img.shape}")
+        # Logging: Print resized image shape
+        logging.debug(f"Resized image dimensions: {img.shape}")
 
         if img.shape[0] <= 0 or img.shape[1] <= 0:
             raise ValueError(f"Resized image has invalid dimensions: {img.shape}")
@@ -102,38 +105,57 @@ class FastStyleTransferNode:
         content_image_path = os.path.join(temp_dir, 'temp_content_image.jpg')
         style_image_path = os.path.join(temp_dir, 'temp_style_image.jpg')
 
-        # Convert torch.Tensor to numpy arrays and ensure they have 3 channels
-        content_np = self.tensor_to_numpy(content_image)
-        style_np = self.tensor_to_numpy(style_image)
+        try:
+            # Convert torch.Tensor to numpy arrays and ensure they have 3 channels
+            content_np = self.tensor_to_numpy(content_image)
+            style_np = self.tensor_to_numpy(style_image)
 
-        # Save numpy arrays as images
-        self.save_numpy_as_image(content_np, content_image_path)
-        self.save_numpy_as_image(style_np, style_image_path)
+            # Save numpy arrays as images
+            self.save_numpy_as_image(content_np, content_image_path)
+            self.save_numpy_as_image(style_np, style_image_path)
 
-        # Load the TensorFlow Hub model
-        hub_module = hub.load('https://tfhub.dev/google/magenta/arbitrary-image-stylization-v1-256/2')
+            # Load the TensorFlow Hub model
+            hub_module = hub.load('https://tfhub.dev/google/magenta/arbitrary-image-stylization-v1-256/2')
 
-        # Load and resize the images using TensorFlow
-        content_img = self.load_image(content_image_path, (output_image_size, output_image_size))
-        style_img = self.load_image(style_image_path, (256, 256))
+            # Load and resize the images using TensorFlow
+            content_img = self.load_image(content_image_path, (output_image_size, output_image_size))
+            style_img = self.load_image(style_image_path, (256, 256))
 
-        # Add debug information to check dimensions before applying the model
-        print(f"Content image shape before model: {content_img.shape}")
-        print(f"Style image shape before model: {style_img.shape}")
+            # Logging: Check dimensions and channels
+            logging.debug(f"Content image shape before model: {content_img.shape}")
+            logging.debug(f"Style image shape before model: {style_img.shape}")
 
-        # Apply the style transfer
-        stylized_image = hub_module(tf.constant(content_img), tf.constant(style_img))[0]
+            # Apply the style transfer
+            stylized_image = hub_module(tf.constant(content_img), tf.constant(style_img))[0]
 
-        # Debug: Check the output shape and channels
-        print(f"Stylized image shape after model: {stylized_image.shape}")
+            # Logging: Check the output shape and channels
+            logging.debug(f"Stylized image shape after model: {stylized_image.shape}")
 
-        # Convert the stylized image back to a PyTorch tensor
-        stylized_image = stylized_image.numpy()
+            # Convert the stylized image back to a PyTorch tensor
+            stylized_image = stylized_image.numpy()
 
-        # Force the stylized image to have 3 channels if it's grayscale
-        if stylized_image.shape[-1] == 1:
-            stylized_image = np.repeat(stylized_image, 3, axis=-1)
+            # Ensure the output image has 3 channels
+            if stylized_image.shape[-1] == 1:
+                stylized_image = np.repeat(stylized_image, 3, axis=-1)
 
-        stylized_image = torch.from_numpy(stylized_image).permute(0, 3, 1, 2)
+            stylized_image = torch.from_numpy(stylized_image).permute(0, 3, 1, 2)
 
-        return stylized_image
+            return stylized_image
+        finally:
+            # Clean up temporary files
+            if os.path.exists(content_image_path):
+                os.remove(content_image_path)
+            if os.path.exists(style_image_path):
+                os.remove(style_image_path)
+            if os.path.exists(temp_dir) and not os.listdir(temp_dir):
+                os.rmdir(temp_dir)
+
+
+# __init__.py content
+from .fast_style_transfer import FastStyleTransferNode
+
+NODE_CLASS_MAPPINGS = {
+    "FastStyleTransferNode": FastStyleTransferNode,
+}
+
+__all__ = ['NODE_CLASS_MAPPINGS']
