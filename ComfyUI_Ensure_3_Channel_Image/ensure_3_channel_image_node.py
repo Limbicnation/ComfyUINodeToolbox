@@ -23,9 +23,14 @@ class Ensure3ChannelImageNode:
         # Check if image is a tensor and convert to numpy array if necessary
         if isinstance(image, torch.Tensor):
             image = image.cpu().numpy()
-            image = np.transpose(image, (0, 2, 3, 1))  # Convert from (B, C, H, W) to (B, H, W, C)
 
         # Handle different number of channels
+        if image.ndim == 3:  # If the image has no batch dimension (C, H, W)
+            image = np.expand_dims(image, axis=0)  # Add batch dimension (1, C, H, W)
+
+        # Convert from (B, C, H, W) to (B, H, W, C) for PIL processing
+        image = np.transpose(image, (0, 2, 3, 1))
+
         if image.shape[-1] == 4:
             # Convert RGBA to RGB
             image = self.convert_rgba_to_rgb(image)
@@ -33,8 +38,8 @@ class Ensure3ChannelImageNode:
             # Convert grayscale to RGB
             image = self.convert_grayscale_to_rgb(image)
 
-        # Convert back to tensor
-        image = np.transpose(image, (0, 3, 1, 2))  # Convert from (B, H, W, C) to (B, C, H, W)
+        # Convert back to tensor and from (B, H, W, C) to (B, C, H, W)
+        image = np.transpose(image, (0, 3, 1, 2))
         image = torch.tensor(image, dtype=torch.float32)
 
         return (image,)
