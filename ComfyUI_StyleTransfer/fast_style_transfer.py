@@ -1,10 +1,15 @@
 import os
+import certifi
+import requests
 import tensorflow as tf
 import tensorflow_hub as hub
 import numpy as np
 import torch
 from PIL import Image
 import logging
+
+# Set SSL_CERT_FILE environment variable
+os.environ['SSL_CERT_FILE'] = certifi.where()
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -114,8 +119,11 @@ class FastStyleTransferNode:
             self.save_numpy_as_image(content_np, content_image_path)
             self.save_numpy_as_image(style_np, style_image_path)
 
-            # Load the TensorFlow Hub model
-            hub_module = hub.load('https://tfhub.dev/google/magenta/arbitrary-image-stylization-v1-256/2')
+            # Use requests to download the TensorFlow Hub module
+            hub_url = 'https://tfhub.dev/google/magenta/arbitrary-image-stylization-v1-256/2'
+            response = requests.get(hub_url, verify=certifi.where())
+            if response.status_code == 200:
+                hub_module = hub.load(hub_url)
 
             # Load and resize the images using TensorFlow
             content_img = self.load_image(content_image_path, (output_image_size, output_image_size))
@@ -149,7 +157,6 @@ class FastStyleTransferNode:
                 os.remove(style_image_path)
             if os.path.exists(temp_dir) and not os.listdir(temp_dir):
                 os.rmdir(temp_dir)
-
 
 # __init__.py content
 from .fast_style_transfer import FastStyleTransferNode
