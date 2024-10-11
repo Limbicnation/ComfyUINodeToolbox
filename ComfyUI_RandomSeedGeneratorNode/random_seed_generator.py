@@ -1,4 +1,5 @@
-import random
+import torch
+import numpy as np
 
 class RandomSeedGeneratorNode:
     RETURN_TYPES = ("INT",)
@@ -17,8 +18,10 @@ class RandomSeedGeneratorNode:
         }
 
     def generate_random_seed(self):
-        """Generates a random seed."""
-        seed = random.randint(0, 2**32 - 1)
+        """Generates a random seed using PyTorch and sets it for both PyTorch and NumPy."""
+        seed = torch.randint(0, 2**32 - 1, (1,)).item()
+        torch.manual_seed(seed)
+        np.random.seed(seed)
         return (seed,)
 
 # KSampler Node definition example
