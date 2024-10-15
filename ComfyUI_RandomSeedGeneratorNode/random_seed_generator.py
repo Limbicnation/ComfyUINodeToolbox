@@ -59,7 +59,8 @@ class RandomSeedGeneratorNode:
         np.random.seed(seed)
         
         # Empty torch caches for efficiency
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         
         return (seed,)
 

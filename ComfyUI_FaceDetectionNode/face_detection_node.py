@@ -1,7 +1,6 @@
 import cv2
 import numpy as np
 import torch
-from matplotlib import pyplot as plt
 
 class FaceDetectionNode:
     """
@@ -90,13 +89,16 @@ class FaceDetectionNode:
             return (torch.zeros(1, 3, 1024, 1024),)  # Return a blank image if no face is detected
         
         # Stack all cropped faces into a single tensor
-        return (torch.stack(cropped_faces),)
+        result = torch.stack(cropped_faces)
+
+        # Clear CUDA cache
+        torch.cuda.empty_cache()
+
+        return (result,)
 
     @classmethod
     def IS_CHANGED(s, image):
-        # This method is optional. If you want the node to always execute,
-        # even if the input hasn't changed, you can implement this method.
-        return float("NaN")  # This will always be considered changed
+        return float("NaN")
 
 # This part is for testing the node independently
 if __name__ == "__main__":
@@ -109,19 +111,6 @@ if __name__ == "__main__":
     # Call the node's function
     result = face_detector.detect_and_crop_faces(dummy_image)
 
-    # Show the result
-    num_faces = result[0].shape[0]
-    print(f"Number of faces detected: {num_faces}")
+    # Print results
+    print(f"Number of faces detected: {result[0].shape[0]}")
     print(f"Output shape of each face: {result[0].shape[1:]}")
-
-    # Visualize the results
-    fig, axes = plt.subplots(1, num_faces, figsize=(5*num_faces, 5))
-    if num_faces == 1:
-        axes = [axes]
-    for i, ax in enumerate(axes):
-        face = result[0][i].permute(1, 2, 0).cpu().numpy()
-        ax.imshow(face)
-        ax.axis('off')
-        ax.set_title(f"Face {i+1}")
-    plt.tight_layout()
-    plt.show()
