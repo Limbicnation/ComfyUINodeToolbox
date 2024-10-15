@@ -2,81 +2,76 @@ import torch
 import numpy as np
 
 class RandomSeedGeneratorNode:
+    """
+    A node that generates a random seed for use in other nodes.
+
+    Class methods
+    -------------
+    INPUT_TYPES (dict):
+        Specifies the input parameters of the node.
+
+    Attributes
+    ----------
+    RETURN_TYPES (`tuple`):
+        The type of each element in the output tuple.
+    RETURN_NAMES (`tuple`):
+        The name of each output in the output tuple.
+    FUNCTION (`str`):
+        The name of the entry-point method.
+    CATEGORY (`str`):
+        The category the node should appear in the UI.
+    """
+
+    @classmethod
+    def INPUT_TYPES(s):
+        """
+        Returns a dictionary which contains config for all input fields.
+        """
+        return {
+            "required": {
+                "seed_range": ("INT", {
+                    "default": 2**32 - 1,
+                    "min": 0,
+                    "max": 2**32 - 1,
+                    "step": 1,
+                    "display": "number"
+                }),
+            },
+        }
+
     RETURN_TYPES = ("INT",)
     RETURN_NAMES = ("Random Seed",)
     FUNCTION = "generate_random_seed"
-    CATEGORY = "Generators"
+    CATEGORY = "utils"
 
-    def __init__(self):
-        self.control_after_each_generation = 'randomize'
+    def generate_random_seed(self, seed_range):
+        """
+        Generates a random seed using PyTorch and sets it for both PyTorch and NumPy.
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        """Defines the input types for the node."""
-        return {
-            "required": {}
-        }
+        Parameters:
+        seed_range (int): The maximum value for the generated seed
 
-    def generate_random_seed(self):
-        """Generates a random seed using PyTorch and sets it for both PyTorch and NumPy."""
-        seed = torch.randint(0, 2**32 - 1, (1,)).item()
+        Returns:
+        tuple: Contains the generated random seed
+        """
+        seed = torch.randint(0, seed_range, (1,)).item()
         torch.manual_seed(seed)
         np.random.seed(seed)
+        
+        # Empty torch caches for efficiency
+        torch.cuda.empty_cache()
+        
         return (seed,)
 
-# KSampler Node definition example
-class KSamplerNode:
-    RETURN_TYPES = ("LATENT",)
-    RETURN_NAMES = ("samples",)
-    FUNCTION = "sample"
-    CATEGORY = "Samplers"
-
-    def __init__(self):
-        self.model = None
-        self.positive = None
-        self.negative = None
-        self.latent_image = None
-        self.seed = None
-        self.steps = 20
-        self.cfg = 8.0
-        self.sampler_name = 'euler'
-        self.scheduler = 'normal'
-        self.denoise = 1.0
-
     @classmethod
-    def INPUT_TYPES(cls):
-        """Defines the input types for the node."""
-        return {
-            "required": {
-                "model": ("LATENT",),
-                "positive": ("TEXT",),
-                "negative": ("TEXT",),
-                "latent_image": ("LATENT",),
-                "seed": ("INT",),
-                "steps": ("INT",),
-                "cfg": ("FLOAT",),
-                "sampler_name": ("TEXT",),
-                "scheduler": ("TEXT",),
-                "denoise": ("FLOAT",)
-            }
-        }
+    def IS_CHANGED(s, seed_range):
+        """
+        Ensures that the node always generates a new seed.
+        """
+        return float("NaN")
 
-    def sample(self, model, positive, negative, latent_image, seed, steps, cfg, sampler_name, scheduler, denoise):
-        """Performs the sampling."""
-        # Sampling logic here using the provided parameters
-        samples = []  # Placeholder for actual sampling results
-        return (samples,)
-
-# Usage Example
+# This part is for testing the node independently
 if __name__ == "__main__":
     seed_generator = RandomSeedGeneratorNode()
-    seed = seed_generator.generate_random_seed()[0]
-
-    ksampler = KSamplerNode()
-    ksampler.seed = seed
-    # Set other required inputs for KSamplerNode
-    samples = ksampler.sample(
-        model=None, positive="", negative="", latent_image=None, seed=seed,
-        steps=20, cfg=8.0, sampler_name='euler', scheduler='normal', denoise=1.0
-    )
-    print("Generated Samples:", samples)
+    seed = seed_generator.generate_random_seed(2**32 - 1)[0]
+    print(f"Generated Random Seed: {seed}")
