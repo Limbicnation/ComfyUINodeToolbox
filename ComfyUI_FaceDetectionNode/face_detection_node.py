@@ -40,17 +40,17 @@ class FaceDetectionNode:
             # Get the first detected face
             x, y, w, h = faces[0]
 
-            # Crop the face
-            face = image[y:y+h, x:x+w]
+            # Crop the face using advanced slicing
+            face = image[y:y+h, x:x+w, :]
 
             # Resize to 1024x1024
             face_resized = cv2.resize(face, (1024, 1024), interpolation=cv2.INTER_AREA)
 
-            # Convert back to RGB (OpenCV uses BGR)
-            face_rgb = cv2.cvtColor(face_resized, cv2.COLOR_BGR2RGB)
+            # Convert back to RGB (OpenCV uses BGR) using NumPy indexing
+            face_rgb = face_resized[:, :, ::-1]
 
-            # Normalize to 0-1 range and convert to float32
-            face_normalized = face_rgb.astype(np.float32) / 255.0
+            # Normalize to 0-1 range and convert to float32 using broadcasting
+            face_normalized = (face_rgb / 255.0).astype(np.float32)
 
             # Convert to tensor and change to channel-first format
             face_tensor = torch.from_numpy(face_normalized).permute(2, 0, 1)
