@@ -1,7 +1,6 @@
 import logging
 import torch
 import numpy as np
-from PIL import Image
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -28,49 +27,41 @@ class ChannelReducer:
     def reduce_channels(self, image, target_channels):
         logger.info(f"Input image shape: {image.shape}, dtype: {image.dtype}")
 
-        # Convert to numpy array if it's a torch tensor
-        if isinstance(image, torch.Tensor):
-            image = image.cpu().numpy()
+        # Ensure input is a torch tensor
+        if isinstance(image, np.ndarray):
+            image = torch.from_numpy(image)
 
         # Handle the unusual (1, 1, 512) shape
         if image.shape == (1, 1, 512):
             logger.info("Detected unusual (1, 1, 512) shape. Reshaping...")
-            image = image.reshape(512, 1, 1)
-            image = np.broadcast_to(image, (512, 512, 1))
+            image = image.view(1, 512, 1, 1)
+            image = image.expand(-1, -1, 512, 512)  # Expand to 512x512
             logger.info(f"Reshaped to: {image.shape}")
 
-        # Ensure the image is in the correct format (H, W, C)
-        if len(image.shape) == 4:
-            image = image.squeeze(0)  # Remove batch dimension if present
-        if image.shape[0] == 1 or image.shape[0] == 3 or image.shape[0] == 4:
-            image = np.transpose(image, (1, 2, 0))  # Change from (C, H, W) to (H, W, C)
+        # Ensure 4D tensor (B, C, H, W)
+        if len(image.shape) == 3:
+            image = image.unsqueeze(0)
 
-        # Convert to uint8 if necessary
-        if image.dtype != np.uint8:
-            if image.max() <= 1.0:
-                image = (image * 255).astype(np.uint8)
-            else:
-                image = image.astype(np.uint8)
+        # Move channels to the correct dimension if necessary
+        if image.shape[1] != 1 and image.shape[1] != 3 and image.shape[1] != 4:
+            image = image.permute(0, 3, 1, 2)
 
-        # Create PIL Image
-        pil_image = Image.fromarray(image)
+        input_channels = image.shape[1]
+        logger.info(f"Input image has {input_channels} channels")
+        logger.info(f"Reducing channels to {target_channels}")
 
-        # Convert to RGB if necessary
-        if pil_image.mode != 'RGB':
-            pil_image = pil_image.convert('RGB')
+        if input_channels > target_channels:
+            # Reduce to target channels
+            image = image[:, :target_channels, :, :]
+            logger.info("Channel reduction successful")
+        elif input_channels < target_channels:
+            # Pad with zeros to reach target channels
+            padding = torch.zeros(image.shape[0], target_channels - input_channels, *image.shape[2:], device=image.device)
+            image = torch.cat([image, padding], dim=1)
+            logger.info("Channel padding successful")
 
-        # Reduce channels
-        if target_channels == 1:
-            reduced_image = pil_image.convert('L')
-        elif target_channels == 3:
-            reduced_image = pil_image.convert('RGB')
-        elif target_channels == 4:
-            reduced_image = pil_image.convert('RGBA')
-        else:
-            raise ValueError(f"Unsupported number of target channels: {target_channels}")
+        # Ensure the output is in the format expected by ComfyUI (B, H, W, C)
+        image = image.permute(0, 2, 3, 1)
 
-        # Convert back to numpy array
-        output_image = np.array(reduced_image)
-
-        logger.info(f"Output image shape: {output_image.shape}, dtype: {output_image.dtype}")
-        return (output_image,)
+        logger.info(f"Output image shape: {image.shape}, dtype: {image.dtype}")
+        return (image,)
