@@ -16,6 +16,7 @@ class ChannelReducer:
             "required": {
                 "image": ("IMAGE",),
                 "target_channels": ("INT", {"default": 3, "min": 1, "max": 4, "step": 1}),
+                "swap_rb": ("BOOLEAN", {"default": False}),
             },
         }
 
@@ -24,7 +25,7 @@ class ChannelReducer:
 
     CATEGORY = "Custom/Utilities"
 
-    def reduce_channels(self, image, target_channels):
+    def reduce_channels(self, image, target_channels, swap_rb):
         logger.info(f"Input image shape: {image.shape}, dtype: {image.dtype}")
 
         # Ensure input is a torch tensor
@@ -59,6 +60,13 @@ class ChannelReducer:
             padding = torch.zeros(image.shape[0], target_channels - input_channels, *image.shape[2:], device=image.device)
             image = torch.cat([image, padding], dim=1)
             logger.info("Channel padding successful")
+
+        # Swap red and blue channels if requested
+        if swap_rb and image.shape[1] >= 3:
+            logger.info("Swapping red and blue channels")
+            red_channel = image[:, 0, :, :].clone()
+            image[:, 0, :, :] = image[:, 2, :, :]
+            image[:, 2, :, :] = red_channel
 
         # Ensure the output is in the format expected by ComfyUI (B, H, W, C)
         image = image.permute(0, 2, 3, 1)
