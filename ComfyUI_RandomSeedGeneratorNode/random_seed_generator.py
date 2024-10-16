@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+import gc
 
 class RandomSeedGeneratorNode:
     """
@@ -54,13 +55,21 @@ class RandomSeedGeneratorNode:
         Returns:
         tuple: Contains the generated random seed
         """
-        seed = torch.randint(0, seed_range, (1,)).item()
-        torch.manual_seed(seed)
-        np.random.seed(seed)
-        
-        # Empty torch caches for efficiency
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        seed = 0
+        try:
+            with torch.no_grad():
+                seed = torch.randint(0, seed_range, (1,), dtype=torch.int32).item()
+            torch.manual_seed(seed)
+            np.random.seed(seed)
+        except Exception as e:
+            print(f"An error occurred while generating random seed: {str(e)}")
+            seed = 0  # Default to 0 if an error occurs
+        finally:
+            # Empty torch caches for efficiency
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            # Perform garbage collection
+            gc.collect()
         
         return (seed,)
 
