@@ -14,8 +14,8 @@ class ChannelReducer:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "image": ("LATENT",),
-                "target_channels": ("INT", {"default": 4, "min": 1, "max": 4, "step": 1}),
+                "image": ("IMAGE",),  # Changed from LATENT to IMAGE
+                "target_channels": ("INT", {"default": 3, "min": 1, "max": 4, "step": 1}),
             },
         }
 
@@ -25,13 +25,22 @@ class ChannelReducer:
     CATEGORY = "Custom/Utilities"
 
     def reduce_channels(self, image, target_channels):
-        logger.info(f"Input image shape: {image.shape}")
+        logger.info(f"Input image shape: {image.shape}, dtype: {image.dtype}")
 
-        # Check if the input is in the unusual (1, 1, 1024) format
-        if image.shape == (1, 1, 1024):
-            # Reshape to (1, 1024, 1, 1)
-            image = image.view(1, 1024, 1, 1)
-            logger.info("Reshaped unusual input format")
+        # Convert to torch tensor if it's a numpy array
+        if isinstance(image, np.ndarray):
+            image = torch.from_numpy(image)
+
+        # Handle the unusual (1, 1, 512) shape
+        if image.shape == (1, 1, 512):
+            logger.info("Detected unusual (1, 1, 512) shape. Reshaping...")
+            image = image.view(1, 512, 1, 1)
+            image = image.expand(-1, -1, 512, 512)  # Expand to 512x512
+            logger.info(f"Reshaped to: {image.shape}")
+
+        # Ensure 4D tensor (B, C, H, W)
+        if len(image.shape) == 3:
+            image = image.unsqueeze(0)
 
         input_channels = image.shape[1]
         logger.info(f"Input image has {input_channels} channels")
@@ -60,5 +69,5 @@ class ChannelReducer:
         output_image = reduced_image.squeeze().permute(1, 2, 0).cpu().numpy()
         output_image = np.clip(output_image * 255, 0, 255).astype(np.uint8)
 
-        logger.info(f"Output image shape: {output_image.shape}")
+        logger.info(f"Output image shape: {output_image.shape}, dtype: {output_image.dtype}")
         return (output_image,)
