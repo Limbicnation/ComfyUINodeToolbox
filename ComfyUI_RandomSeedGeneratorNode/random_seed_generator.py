@@ -47,7 +47,7 @@ class RandomSeedGeneratorNode:
 
     def generate_random_seed(self, seed_range):
         """
-        Generates a random seed using PyTorch and sets it for both PyTorch and NumPy.
+        Generates a random seed using PyTorch on CPU and sets it for both PyTorch and NumPy.
 
         Parameters:
         seed_range (int): The maximum value for the generated seed
@@ -57,10 +57,20 @@ class RandomSeedGeneratorNode:
         """
         seed = 0
         try:
+            # Ensure we're using CPU for random number generation
+            device = torch.device("cpu")
             with torch.no_grad():
-                seed = torch.randint(0, seed_range, (1,), dtype=torch.int32).item()
+                # Generate random seed on CPU
+                seed = torch.randint(0, seed_range, (1,), dtype=torch.int32, device=device).item()
+            
+            # Set the seed for both PyTorch and NumPy
             torch.manual_seed(seed)
             np.random.seed(seed)
+
+            # If CUDA is available, also set the CUDA seed
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed(seed)
+                torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
         except Exception as e:
             print(f"An error occurred while generating random seed: {str(e)}")
             seed = 0  # Default to 0 if an error occurs
