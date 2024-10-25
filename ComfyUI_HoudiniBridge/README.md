@@ -1,60 +1,103 @@
 # ComfyUI Houdini Bridge
 
-A bridge node for ComfyUI that connects with Houdini's render output, allowing seamless integration between Houdini renders and ComfyUI workflows.
+A bridge that automatically sends Houdini renders to ComfyUI for processing.
 
-## Features
+## Quick Setup Guide
 
-- Watches for new renders from Houdini
-- Automatically loads rendered images into ComfyUI
-- Supports PNG, JPG, and EXR formats
-- Configurable watch directory and file patterns
-- Optional auto-reload and render wait functionality
-- Houdini ROP integration for automatic workflow triggering
+### 1. Install the Bridge
 
-## Setup
-
-1. Install the node in your ComfyUI custom_nodes directory
-2. Set the COMFYUI_BRIDGE_PATH environment variable in Houdini:
+1. Copy the entire `ComfyUI_HoudiniBridge` folder to your ComfyUI custom_nodes directory:
+   ```bash
+   cp -r ComfyUI_HoudiniBridge /path/to/ComfyUI/custom_nodes/
    ```
-   setenv COMFYUI_BRIDGE_PATH "/path/to/ComfyUI_HoudiniBridge"
+
+### 2. Set Up Environment
+
+1. Open your Houdini environment file:
+   ```bash
+   # Usually located at:
+   ~/.houdini/houdini.env
+   # or
+   /home/username/houdini19.5/houdini.env
    ```
-3. In Houdini, run the setup script on your ROP node:
+
+2. Add these lines:
+   ```bash
+   # Point to where you installed the bridge
+   COMFYUI_BRIDGE_PATH = "/path/to/ComfyUI/custom_nodes/ComfyUI_HoudiniBridge"
+   
+   # This will be set later after saving your ComfyUI workflow
+   COMFYUI_WORKFLOW_PATH = "/path/to/your/workflow.json"
+   ```
+
+### 3. Set Up ComfyUI Workflow
+
+1. Start ComfyUI
+2. Create a workflow:
+   - Add HoudiniBridge node
+   - Set watch_directory to your Houdini render output path
+   - Set file_pattern to "*.jpg" (or your preferred format)
+   - Enable auto_reload and wait_for_render
+   - Connect to your processing nodes
+3. Save the workflow as JSON (right-click -> Save workflow)
+4. Update COMFYUI_WORKFLOW_PATH in houdini.env to point to this saved JSON file
+
+### 4. Configure Houdini ROP Node
+
+1. In your OpenGL ROP node:
+   - Go to Scripts tab
+   - In Post-Render Script field, paste:
+     ```python
+     import os
+     script_path = os.path.expandvars("$COMFYUI_BRIDGE_PATH/houdini_scripts/post_render.py")
+     exec(open(script_path).read())
+     ```
+   - In Output tab, set your render path (e.g., `/media/gero/Qsync_Ubuntu/Qsync/55_Houdini_Projects_Linux/1_3D/Houdini/1_Scenes/StableHoudini_Linux/Render/Temp/render.jpg`)
+
+### 5. Test the Setup
+
+1. Make sure ComfyUI is running
+2. In Houdini, click Render in your ROP node
+3. The process should:
+   - Render your image
+   - Automatically queue the ComfyUI workflow
+   - Process the render through ComfyUI
+
+## Troubleshooting
+
+If the workflow doesn't start automatically:
+
+1. Check ComfyUI console for errors
+2. Verify environment variables:
    ```python
-   node = hou.pwd()
-   exec(open("$COMFYUI_BRIDGE_PATH/houdini_scripts/setup_rop.py").read())
+   # In Houdini Python Shell:
+   import os
+   print(os.getenv("COMFYUI_BRIDGE_PATH"))
+   print(os.getenv("COMFYUI_WORKFLOW_PATH"))
    ```
-
-## Houdini Integration
-
-1. Select your ROP node
-2. Run the setup script to add ComfyUI parameters
-3. Set the workflow file path in the ComfyUI tab
-4. The post-render script will automatically trigger ComfyUI processing
-
-## Parameters
-
-### ComfyUI Node
-- watch_directory: Directory to monitor for new renders
-- file_pattern: File pattern to match (e.g., *.png, *.exr)
-- auto_reload: Automatically reload when new renders appear
-- wait_for_render: Wait for new renders before proceeding
-
-### Houdini ROP
-- Workflow File: Path to your ComfyUI workflow JSON file
-- Post-Render Script: Script to trigger ComfyUI (auto-configured)
-
-## Workflow
-
-1. Set up your ComfyUI workflow with the HoudiniBridge node
-2. Save the workflow as a JSON file
-3. Configure the ROP node with the workflow file path
-4. Render in Houdini - ComfyUI will automatically process the render
+3. Make sure the watch_directory in HoudiniBridge node matches your render output directory
+4. Check that ComfyUI is running and accessible at http://127.0.0.1:8188
 
 ## Requirements
 
-- watchdog
-- OpenEXR (for EXR support)
-- PIL
-- numpy
-- torch
-- requests (for API communication)
+- ComfyUI running on localhost:8188
+- Python packages: watchdog, requests, PIL
+- Houdini 19.0 or later
+
+## Directory Structure
+
+```
+ComfyUI_HoudiniBridge/
+├── __init__.py
+├── houdini_bridge.py
+├── houdini_scripts/
+│   ├── post_render.py
+│   └── setup_rop.py
+└── README.md
+```
+
+## Common Issues
+
+1. "Workflow not found": Make sure COMFYUI_WORKFLOW_PATH points to your saved workflow JSON
+2. "ComfyUI not responding": Ensure ComfyUI is running before rendering
+3. "File not detected": Verify the watch_directory path matches your render output path
