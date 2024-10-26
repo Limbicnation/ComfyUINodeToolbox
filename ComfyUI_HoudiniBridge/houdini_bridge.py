@@ -44,15 +44,16 @@ class HoudiniBridge:
             # Normalize to 0-1 range
             img_np = img_np / 255.0
             
-            # Add batch and channel dimensions
-            img_np = img_np[None, None, ...]
+            # Reshape to match expected format (batch, height, width)
+            img_np = img_np[None, ...]
             
             # Convert to torch tensor
             img_tensor = torch.from_numpy(img_np)
             
-            # Repeat the single channel to make RGB
-            img_tensor = img_tensor.repeat(1, 3, 1, 1)
+            # Add channel dimension and repeat to make RGB
+            img_tensor = img_tensor.unsqueeze(1).repeat(1, 3, 1, 1)
             
+            print(f"Loaded image shape: {img_tensor.shape}")
             return (img_tensor,)
             
         except Exception as e:
