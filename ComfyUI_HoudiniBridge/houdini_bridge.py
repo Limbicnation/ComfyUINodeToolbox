@@ -9,11 +9,11 @@ class HoudiniBridge:
         return {
             "required": {
                 "base_path": ("STRING", {
-                    "default": "/media/gero/Qsync_Ubuntu/Qsync/55_Houdini_Projects_Linux/1_3D/Houdini/1_Scenes/StableHoudini_Linux/Render/Temp",
+                    "default": "",  # Empty default, user must set their own path
                     "multiline": False
                 }),
                 "filename": ("STRING", {
-                    "default": "Depth.jpg",
+                    "default": "render.jpg",  # Generic default filename
                     "multiline": False
                 }),
             },
