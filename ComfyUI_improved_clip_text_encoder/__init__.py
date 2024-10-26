@@ -1,30 +1,18 @@
-import random
+"""
+Flux-enhanced CLIP Text Encoder for ComfyUI
+"""
 
-class RandomSeedGeneratorNode:
-    def __init__(self):
-        pass
+from .improved_clip_text_encoder import CLIPTextEncodeFlux
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {}
-        }
-
-    RETURN_TYPES = ("INT",)
-    RETURN_NAMES = ("Random Seed",)
-    FUNCTION = "generate_random_seed"
-    CATEGORY = "Generators"
-
-    def generate_random_seed(self):
-        seed = random.randint(0, 2**32 - 1)
-        return (seed,)
-
-# A dictionary that contains all nodes you want to export with their names
+# Register the node class
 NODE_CLASS_MAPPINGS = {
-    "RandomSeedGenerator": RandomSeedGeneratorNode
+    "CLIPTextEncodeFlux": CLIPTextEncodeFlux
 }
 
-# A dictionary that contains the friendly/humanly readable titles for the nodes
+# Register the display name
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "RandomSeedGenerator": "Random Seed Generator"
+    "CLIPTextEncodeFlux": "CLIP Text Encode (Flux)"
 }
+
+# Make these mappings available to ComfyUI
+__all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS']

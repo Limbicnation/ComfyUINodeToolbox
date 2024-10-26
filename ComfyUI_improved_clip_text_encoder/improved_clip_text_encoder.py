@@ -1,9 +1,11 @@
 import torch
-import nodes
-import numpy as np
 from transformers import T5EncoderModel, T5Tokenizer
 
 class CLIPTextEncodeFlux:
+    """
+    A Flux-enhanced CLIP text encoder node that combines CLIP and T5XXL models
+    for improved text understanding and conditioning generation.
+    """
     def __init__(self):
         self.t5_model = None
         self.t5_tokenizer = None
@@ -13,19 +15,44 @@ class CLIPTextEncodeFlux:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "clip": ("CLIP", ),
-                "clip_l": ("STRING", {"multiline": True}),
-                "t5xxl": ("STRING", {"multiline": True}),
-                "guidance": ("FLOAT", {"default": 4.0, "min": 0.0, "max": 100.0, "step": 0.1}),
-                "flux_strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0, "step": 0.1}),
-                "flux_mode": (["balanced", "creative", "precise"], ),
-                "semantic_weight": ("FLOAT", {"default": 0.7, "min": 0.0, "max": 1.0, "step": 0.05})
+                "clip": ("CLIP",),
+                "clip_l": ("STRING", {
+                    "multiline": True,
+                    "default": "Enter CLIP text here"
+                }),
+                "t5xxl": ("STRING", {
+                    "multiline": True,
+                    "default": "Enter T5XXL text here"
+                }),
+                "guidance": ("FLOAT", {
+                    "default": 4.0,
+                    "min": 0.0,
+                    "max": 100.0,
+                    "step": 0.1,
+                    "display": "slider"
+                }),
+                "flux_strength": ("FLOAT", {
+                    "default": 1.0,
+                    "min": 0.0,
+                    "max": 10.0,
+                    "step": 0.1,
+                    "display": "slider"
+                }),
+                "flux_mode": (["balanced", "creative", "precise"],),
+                "semantic_weight": ("FLOAT", {
+                    "default": 0.7,
+                    "min": 0.0,
+                    "max": 1.0,
+                    "step": 0.05,
+                    "display": "slider"
+                })
             }
         }
 
     RETURN_TYPES = ("CONDITIONING",)
+    RETURN_NAMES = ("conditioning",)
     FUNCTION = "encode"
-    CATEGORY = "conditioning"
+    CATEGORY = "conditioning/text"
 
     def load_t5_model(self):
         if self.t5_model is None:
@@ -47,7 +74,7 @@ class CLIPTextEncodeFlux:
         else:  # precise mode
             # Enhance semantic alignment
             attention = torch.matmul(clip_norm, t5_norm.transpose(-2, -1))
-            attention = torch.softmax(attention / np.sqrt(clip_norm.size(-1)), dim=-1)
+            attention = torch.softmax(attention / torch.sqrt(torch.tensor(clip_norm.size(-1))), dim=-1)
             flux_matrix = torch.matmul(attention, t5_norm)
         
         # Apply flux strength
@@ -56,6 +83,21 @@ class CLIPTextEncodeFlux:
         return flux_matrix
 
     def encode(self, clip, clip_l, t5xxl, guidance, flux_strength, flux_mode, semantic_weight):
+        """
+        Encodes text inputs using both CLIP and T5XXL models with Flux enhancement.
+        
+        Parameters:
+            clip (CLIP): CLIP model object
+            clip_l (str): Text input for CLIP encoding
+            t5xxl (str): Text input for T5XXL encoding
+            guidance (float): Generation guidance scale
+            flux_strength (float): Intensity of Flux processing
+            flux_mode (str): Processing mode (balanced/creative/precise)
+            semantic_weight (float): Balance between CLIP and T5XXL influence
+            
+        Returns:
+            tuple: Contains the enhanced conditioning output
+        """
         # Load T5 model if not loaded
         self.load_t5_model()
         
@@ -75,11 +117,3 @@ class CLIPTextEncodeFlux:
         
         # Create final conditioning
         return ([[cond, {"pooled_output": clip_embed.pooled}]], )
-
-NODE_CLASS_MAPPINGS = {
-    "CLIPTextEncodeFlux": CLIPTextEncodeFlux
-}
-
-NODE_DISPLAY_NAME_MAPPINGS = {
-    "CLIPTextEncodeFlux": "CLIP Text Encode (Flux)"
-}
