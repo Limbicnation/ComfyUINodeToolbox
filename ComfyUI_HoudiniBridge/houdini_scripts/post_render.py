@@ -23,13 +23,22 @@ def trigger_comfyui_workflow(node):
         # ComfyUI API endpoint
         api_url = "http://127.0.0.1:8188"
         
-        # Get the render output directory
+        # Get the render output directory and filename
         render_path = node.parm('picture').eval()
         render_dir = os.path.dirname(render_path)
+        filename = os.path.basename(render_path)
         
-        # Wait for render to complete
-        time.sleep(1)
+        print(f"Render completed: {render_path}")
+        print(f"Watching directory: {render_dir}")
+        print(f"Filename: {filename}")
         
+        # Wait for render to complete and file to be written
+        time.sleep(2)
+        
+        if not os.path.exists(render_path):
+            print(f"Error: Render output not found at {render_path}")
+            return
+            
         # Get workflow file path
         workflow_path = get_workflow_path()
         if not workflow_path or not os.path.exists(workflow_path):
@@ -48,11 +57,9 @@ def trigger_comfyui_workflow(node):
         bridge_found = False
         for node_id, node_data in workflow.items():
             if node_data.get("class_type") == "HoudiniBridge":
-                # Update the watch directory
-                node_data["inputs"]["watch_directory"] = render_dir
-                # Set file pattern based on render output extension
-                ext = os.path.splitext(render_path)[1]
-                node_data["inputs"]["file_pattern"] = f"*{ext}"
+                # Update the node inputs
+                node_data["inputs"]["base_path"] = render_dir
+                node_data["inputs"]["filename"] = filename
                 bridge_found = True
                 break
                 
@@ -68,10 +75,10 @@ def trigger_comfyui_workflow(node):
         
         # Queue the workflow
         try:
+            print("Queuing ComfyUI workflow...")
             response = requests.post(f"{api_url}/prompt", json=prompt)
             if response.status_code == 200:
-                print(f"ComfyUI workflow queued successfully")
-                print(f"Watching directory: {render_dir}")
+                print("ComfyUI workflow queued successfully")
             else:
                 print(f"Error queuing ComfyUI workflow: {response.status_code}")
                 print(f"Response: {response.text}")
