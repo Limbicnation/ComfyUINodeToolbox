@@ -1,87 +1,85 @@
 import torch
-from transformers import CLIPTokenizer, CLIPTextModel
-from typing import Tuple, Dict, List
+import nodes
+import numpy as np
+from transformers import T5EncoderModel, T5Tokenizer
 
-class ImprovedClipTextEncoderNode:
-    MAX_LENGTH = 77
-
+class CLIPTextEncodeFlux:
     def __init__(self):
-        """
-        Initializes the tokenizer and model for the text encoder.
-        """
-        try:
-            self.tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-base-patch32")
-            self.model = CLIPTextModel.from_pretrained("openai/clip-vit-base-patch32")
-        except Exception as e:
-            raise RuntimeError(f"Failed to load CLIP model or tokenizer: {e}")
-
+        self.t5_model = None
+        self.t5_tokenizer = None
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        
     @classmethod
-    def INPUT_TYPES(cls) -> Dict[str, Dict[str, Tuple[str, Dict[str, int]]]]:
-        """
-        Returns the required input types for the encode_text function.
-        """
+    def INPUT_TYPES(s):
         return {
             "required": {
-                "text_input": ("STRING", {"default": "Enter your text here"}),
-                "max_length": ("INT", {"default": cls.MAX_LENGTH, "min": 1, "max": cls.MAX_LENGTH}),
-            },
+                "clip": ("CLIP", ),
+                "clip_l": ("STRING", {"multiline": True}),
+                "t5xxl": ("STRING", {"multiline": True}),
+                "guidance": ("FLOAT", {"default": 4.0, "min": 0.0, "max": 100.0, "step": 0.1}),
+                "flux_strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0, "step": 0.1}),
+                "flux_mode": (["balanced", "creative", "precise"], ),
+                "semantic_weight": ("FLOAT", {"default": 0.7, "min": 0.0, "max": 1.0, "step": 0.05})
+            }
         }
 
-    RETURN_TYPES = ("CLIP", "CONDITIONING")
-    RETURN_NAMES = ("clip_output", "conditioning_output")
-    FUNCTION = "encode_text"
-    CATEGORY = "Improved"
+    RETURN_TYPES = ("CONDITIONING",)
+    FUNCTION = "encode"
+    CATEGORY = "conditioning"
 
-    def encode_text(self, text_input: str, max_length: int = MAX_LENGTH) -> Tuple[Dict[str, torch.Tensor], List[Dict[str, torch.Tensor]]]:
-        """
-        Encodes the input text using the CLIP model and returns the embeddings.
+    def load_t5_model(self):
+        if self.t5_model is None:
+            self.t5_model = T5EncoderModel.from_pretrained("t5-xxl").to(self.device)
+            self.t5_tokenizer = T5Tokenizer.from_pretrained("t5-xxl")
+
+    def process_with_flux(self, clip_embed, t5_embed, flux_strength, flux_mode, semantic_weight):
+        # Normalize embeddings
+        clip_norm = torch.nn.functional.normalize(clip_embed, p=2, dim=-1)
+        t5_norm = torch.nn.functional.normalize(t5_embed, p=2, dim=-1)
         
-        Parameters:
-        text_input (str): The input text to encode.
-        max_length (int): The maximum length for tokenization.
-
-        Returns:
-        Tuple: A tuple containing the clip output and conditioning output.
-        """
-        if not isinstance(text_input, str) or not text_input.strip():
-            raise ValueError("Invalid text input. It must be a non-empty string.")
+        # Apply flux mode adjustments
+        if flux_mode == "balanced":
+            flux_matrix = torch.lerp(clip_norm, t5_norm, semantic_weight)
+        elif flux_mode == "creative":
+            # Add controlled randomness for creative variation
+            noise = torch.randn_like(clip_norm) * 0.1
+            flux_matrix = torch.lerp(clip_norm + noise, t5_norm, semantic_weight)
+        else:  # precise mode
+            # Enhance semantic alignment
+            attention = torch.matmul(clip_norm, t5_norm.transpose(-2, -1))
+            attention = torch.softmax(attention / np.sqrt(clip_norm.size(-1)), dim=-1)
+            flux_matrix = torch.matmul(attention, t5_norm)
         
-        if not isinstance(max_length, int) or not (1 <= max_length <= self.MAX_LENGTH):
-            raise ValueError(f"Invalid max_length. It must be an integer between 1 and {self.MAX_LENGTH}.")
+        # Apply flux strength
+        flux_matrix = flux_matrix * flux_strength
+        
+        return flux_matrix
 
-        try:
-            # Tokenize the input text
-            inputs = self.tokenizer(
-                text_input, 
-                padding="max_length", 
-                max_length=max_length, 
-                truncation=True, 
-                return_tensors="pt"
-            )
+    def encode(self, clip, clip_l, t5xxl, guidance, flux_strength, flux_mode, semantic_weight):
+        # Load T5 model if not loaded
+        self.load_t5_model()
+        
+        # Process CLIP text
+        tokens = clip.tokenize(clip_l)
+        clip_embed = clip.encode_from_tokens(tokens)
+        
+        # Process T5XXL text
+        t5_tokens = self.t5_tokenizer(t5xxl, return_tensors="pt", padding=True, truncation=True).to(self.device)
+        t5_embed = self.t5_model(**t5_tokens).last_hidden_state
+        
+        # Apply Flux processing
+        flux_enhanced = self.process_with_flux(clip_embed, t5_embed, flux_strength, flux_mode, semantic_weight)
+        
+        # Combine with guidance scale
+        cond = flux_enhanced * guidance
+        
+        # Create final conditioning
+        return ([[cond, {"pooled_output": clip_embed.pooled}]], )
 
-            # Generate text embeddings using the CLIP model
-            with torch.no_grad():
-                outputs = self.model(**inputs)
-                last_hidden_state = outputs.last_hidden_state
-                pooled_output = outputs.pooler_output
-
-            # Prepare the CLIP and CONDITIONING outputs
-            clip_output = {
-                "text_embeddings": last_hidden_state,
-                "pooled_output": pooled_output
-            }
-            conditioning_output = [[last_hidden_state, {"pooled_output": pooled_output}]]
-
-            return clip_output, conditioning_output
-
-        except Exception as e:
-            raise RuntimeError(f"Error during text encoding: {e}")
-
-# Register the node
 NODE_CLASS_MAPPINGS = {
-    "ImprovedClipTextEncoder": ImprovedClipTextEncoderNode
+    "CLIPTextEncodeFlux": CLIPTextEncodeFlux
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "ImprovedClipTextEncoder": "Improved CLIP Text Encoder"
+    "CLIPTextEncodeFlux": "CLIP Text Encode (Flux)"
 }
