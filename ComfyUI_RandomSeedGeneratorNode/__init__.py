@@ -1,9 +1,15 @@
+"""
+Random Seed Generator Node for ComfyUI
+"""
+
 from .random_seed_generator import RandomSeedGeneratorNode
 
 NODE_CLASS_MAPPINGS = {
-    "RandomSeedGeneratorNode": RandomSeedGeneratorNode
+    "RandomSeedGenerator": RandomSeedGeneratorNode
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "RandomSeedGeneratorNode": "Random Seed Generator"
+    "RandomSeedGenerator": "Random Seed Generator"
 }
+
+__all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS']
