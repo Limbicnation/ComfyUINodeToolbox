@@ -8,7 +8,6 @@ class MemoryOptimizer:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "latent": ("LATENT",),  # Dedicated LATENT input
                 "max_batch_size": ("INT", {
                     "default": 1,
                     "min": 1,
@@ -26,6 +25,10 @@ class MemoryOptimizer:
                 "aggressive_cleanup": ("BOOLEAN", {"default": True}),
                 "unload_models": ("BOOLEAN", {"default": True}),
             },
+            "optional": {
+                "latent": ("LATENT",),
+                "image": ("IMAGE",),
+            }
         }
 
     RETURN_TYPES = ("IMAGE", "LATENT")
@@ -116,9 +119,51 @@ class MemoryOptimizer:
             print(f"Error optimizing latent: {str(e)}")
             raise
 
-    def optimize_memory(self, latent, max_batch_size, max_dimensions, 
+    def optimize_image(self, image, max_dimensions, use_half_precision, force_cpu_offload):
+        """Optimize image tensor"""
+        try:
+            # Get current dimensions
+            batch_size, channels, height, width = image.shape
+
+            # Resize if needed
+            if height > max_dimensions or width > max_dimensions:
+                scale = max_dimensions / max(height, width)
+                new_height = int(height * scale)
+                new_width = int(width * scale)
+
+                try:
+                    image = torch.nn.functional.interpolate(
+                        image,
+                        size=(new_height, new_width),
+                        mode='bilinear',
+                        align_corners=False
+                    )
+                except torch.cuda.OutOfMemoryError:
+                    image = image.cpu()
+                    image = torch.nn.functional.interpolate(
+                        image,
+                        size=(new_height, new_width),
+                        mode='bilinear',
+                        align_corners=False
+                    )
+
+            # Convert to half precision if requested
+            if use_half_precision and image.dtype != torch.float16:
+                image = image.half()
+
+            # Move to CPU if requested
+            if force_cpu_offload and image.device.type == 'cuda':
+                image = image.cpu()
+
+            return image
+        except Exception as e:
+            print(f"Error optimizing image: {str(e)}")
+            raise
+
+    def optimize_memory(self, max_batch_size, max_dimensions, 
                        use_half_precision, force_cpu_offload, 
-                       aggressive_cleanup, unload_models):
+                       aggressive_cleanup, unload_models,
+                       latent=None, image=None):
         try:
             # Initial cleanup if requested
             if aggressive_cleanup:
@@ -133,16 +178,27 @@ class MemoryOptimizer:
             if initial_memory['cuda_allocated'] > 0.9 * initial_memory['cuda_cached']:
                 force_cpu_offload = True
 
-            # Process the latent input
-            optimized_latent = self.optimize_latent(
-                latent, max_batch_size, use_half_precision, force_cpu_offload
-            )
+            # Initialize return values
+            optimized_image = None
+            optimized_latent = None
+
+            # Process latent if provided
+            if latent is not None:
+                optimized_latent = self.optimize_latent(
+                    latent, max_batch_size, use_half_precision, force_cpu_offload
+                )
+
+            # Process image if provided
+            if image is not None:
+                optimized_image = self.optimize_image(
+                    image, max_dimensions, use_half_precision, force_cpu_offload
+                )
 
             # Final cleanup
             if aggressive_cleanup:
                 self.emergency_cleanup()
 
-            return (None, optimized_latent)  # Return None for image since we only process latents now
+            return (optimized_image, optimized_latent)
 
         except torch.cuda.OutOfMemoryError:
             print("Out of Memory error encountered, attempting recovery...")
@@ -154,14 +210,16 @@ class MemoryOptimizer:
             if not force_cpu_offload:
                 # Retry with CPU offloading
                 return self.optimize_memory(
-                    latent, max_batch_size, max_dimensions,
-                    use_half_precision, True, True, True
+                    max_batch_size, max_dimensions,
+                    use_half_precision, True, True, True,
+                    latent, image
                 )
             else:
                 raise RuntimeError("Out of memory error persists after recovery attempts")
 
     @classmethod
-    def IS_CHANGED(s, latent, max_batch_size, max_dimensions, 
+    def IS_CHANGED(s, max_batch_size, max_dimensions, 
                    use_half_precision, force_cpu_offload, 
-                   aggressive_cleanup, unload_models):
+                   aggressive_cleanup, unload_models,
+                   latent=None, image=None):
         return float("NaN")
