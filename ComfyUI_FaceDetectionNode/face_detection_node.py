@@ -27,28 +27,36 @@ class FaceDetectionNode:
 
     def detect_and_crop_faces(self, image):
         try:
+            # Log input shape
+            logger.info(f"Input shape: {image.shape}, type: {type(image)}")
+
             # Convert input tensor to numpy array
             if isinstance(image, torch.Tensor):
                 if len(image.shape) == 4:  # Batch of images
                     image_np = image[0].cpu().numpy()  # Take first image from batch
                 else:
                     image_np = image.cpu().numpy()
-                
-                # Convert from CHW to HWC format if necessary
-                if image_np.shape[0] == 3:  # If in CHW format
-                    image_np = np.transpose(image_np, (1, 2, 0))
-                
-                # Scale to 0-255 range
-                image_np = (image_np * 255).astype(np.uint8)
             else:
                 image_np = image
 
-            # Convert to RGB
-            if len(image_np.shape) == 3 and image_np.shape[2] == 3:
-                image_rgb = cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB)
-            else:
-                raise ValueError(f"Unexpected image shape: {image_np.shape}")
+            # Log numpy array shape after conversion
+            logger.info(f"Numpy array shape: {image_np.shape}")
 
+            # Convert from CHW to HWC if necessary
+            if image_np.shape[0] == 3:  # If in CHW format
+                image_np = np.transpose(image_np, (1, 2, 0))
+                logger.info(f"After transpose: {image_np.shape}")
+
+            # Ensure we're working with float values 0-1
+            if image_np.dtype != np.float32:
+                image_np = image_np.astype(np.float32)
+            
+            # Scale to 0-255 range for OpenCV
+            image_np_uint8 = (image_np * 255).clip(0, 255).astype(np.uint8)
+            
+            # Convert to RGB for OpenCV
+            image_rgb = cv2.cvtColor(image_np_uint8, cv2.COLOR_BGR2RGB)
+            
             # Convert to grayscale for face detection
             gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
 
@@ -61,44 +69,67 @@ class FaceDetectionNode:
             )
 
             if len(faces) == 0:
-                # If no faces detected, return original image
-                # Ensure correct format for ComfyUI (B,C,H,W)
-                return (torch.from_numpy(image_np.transpose(2, 0, 1)).float().unsqueeze(0) / 255.0,)
+                logger.info("No faces detected")
+                # Return original image in correct format
+                output = torch.from_numpy(image_np_uint8).float() / 255.0
+                if len(output.shape) == 3:
+                    output = output.permute(2, 0, 1)  # HWC to CHW
+                    output = output.unsqueeze(0)  # Add batch dimension
+                return (output,)
 
             # Process detected faces
             cropped_faces = []
+            max_h, max_w = 0, 0
+            
+            # First pass: determine maximum dimensions
+            for (x, y, w, h) in faces:
+                max_h = max(max_h, h)
+                max_w = max(max_w, w)
+
+            # Second pass: crop and resize faces
             for (x, y, w, h) in faces:
                 face = image_rgb[y:y+h, x:x+w]
-                cropped_faces.append(face)
+                # Resize to maximum dimensions to ensure consistent size
+                face_resized = cv2.resize(face, (max_w, max_h))
+                cropped_faces.append(face_resized)
 
             if cropped_faces:
-                # Resize all faces to the same size (use size of first face)
-                target_size = cropped_faces[0].shape[:2]
-                resized_faces = []
-                
-                for face in cropped_faces:
-                    resized = cv2.resize(face, (target_size[1], target_size[0]))
-                    resized_faces.append(resized)
-
                 # Stack faces vertically
-                stacked_faces = np.vstack(resized_faces)
+                stacked_faces = np.vstack(cropped_faces)
                 
-                # Convert to correct format for ComfyUI
-                # 1. Convert to CHW format
-                stacked_faces = stacked_faces.transpose(2, 0, 1)
-                # 2. Convert to tensor and add batch dimension
-                stacked_faces = torch.from_numpy(stacked_faces).float().unsqueeze(0) / 255.0
+                # Convert to float32 and normalize to 0-1
+                stacked_faces = stacked_faces.astype(np.float32) / 255.0
+                
+                # Convert to torch tensor
+                output = torch.from_numpy(stacked_faces)
+                
+                # Ensure correct channel order (HWC to CHW)
+                if len(output.shape) == 3:
+                    output = output.permute(2, 0, 1)
+                
+                # Add batch dimension if needed
+                if len(output.shape) == 3:
+                    output = output.unsqueeze(0)
 
-                logger.info(f"Output tensor shape: {stacked_faces.shape}")
-                return (stacked_faces,)
+                logger.info(f"Final output shape: {output.shape}")
+                return (output,)
             else:
-                # Return original image if face processing failed
-                return (torch.from_numpy(image_np.transpose(2, 0, 1)).float().unsqueeze(0) / 255.0,)
+                logger.warning("Failed to process faces")
+                # Return original image as fallback
+                output = torch.from_numpy(image_np_uint8).float() / 255.0
+                if len(output.shape) == 3:
+                    output = output.permute(2, 0, 1)
+                    output = output.unsqueeze(0)
+                return (output,)
 
         except Exception as e:
             logger.error(f"Error in face detection: {str(e)}")
             # Return original image in case of error
-            return (torch.from_numpy(image_np.transpose(2, 0, 1)).float().unsqueeze(0) / 255.0,)
+            output = torch.from_numpy(image_np_uint8).float() / 255.0
+            if len(output.shape) == 3:
+                output = output.permute(2, 0, 1)
+                output = output.unsqueeze(0)
+            return (output,)
 
     @classmethod
     def IS_CHANGED(s, image):
