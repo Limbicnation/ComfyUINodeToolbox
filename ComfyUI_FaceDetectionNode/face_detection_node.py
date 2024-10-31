@@ -3,8 +3,8 @@ import numpy as np
 import torch
 import logging
 from PIL import Image
+from typing import Tuple, List, Optional
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -14,6 +14,25 @@ class FaceDetectionNode:
         return {
             "required": {
                 "image": ("IMAGE",),
+                "detection_threshold": ("FLOAT", {
+                    "default": 0.8,
+                    "min": 0.1,
+                    "max": 1.0,
+                    "step": 0.1
+                }),
+                "min_face_size": ("INT", {
+                    "default": 64,
+                    "min": 32,
+                    "max": 512,
+                    "step": 8
+                }),
+                "padding": ("INT", {
+                    "default": 32,
+                    "min": 0,
+                    "max": 256,
+                    "step": 8
+                }),
+                "output_mode": (["largest_face", "all_faces"],),
             }
         }
 
@@ -25,115 +44,131 @@ class FaceDetectionNode:
     def __init__(self):
         self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 
-    def detect_and_crop_faces(self, image):
-        try:
-            # Log input shape
-            logger.info(f"Input shape: {image.shape}, type: {type(image)}")
+    def add_padding(self, image: np.ndarray, face_rect: Tuple[int, int, int, int], padding: int) -> Tuple[np.ndarray, Tuple[int, int, int, int]]:
+        """Add padding around detected face and handle boundaries"""
+        x, y, w, h = face_rect
+        height, width = image.shape[:2]
+        
+        # Calculate padded coordinates
+        x1 = max(0, x - padding)
+        y1 = max(0, y - padding)
+        x2 = min(width, x + w + padding)
+        y2 = min(height, y + h + padding)
+        
+        return image[y1:y2, x1:x2], (x1, y1, x2-x1, y2-y1)
 
-            # Convert input tensor to numpy array
-            if isinstance(image, torch.Tensor):
-                if len(image.shape) == 4:  # Batch of images
-                    image_np = image[0].cpu().numpy()  # Take first image from batch
-                else:
-                    image_np = image.cpu().numpy()
+    def detect_and_crop_faces(self, image, detection_threshold, min_face_size, padding, output_mode):
+        # Debug mode for detailed tensor info
+        DEBUG = True
+        
+        # Convert from tensor format if needed
+        if isinstance(image, torch.Tensor):
+            if DEBUG:
+                logger.info(f"Raw tensor info - Shape: {image.shape}, Type: {image.dtype}, Device: {image.device}")
+            
+            # Handle different tensor formats
+            if len(image.shape) == 4:  # BCHW format
+                B, C, H, W = image.shape
+                if DEBUG:
+                    logger.info(f"Detected BCHW format: {B}x{C}x{H}x{W}")
+                
+                if H < W and C > 4:  # Likely wrong dimension order
+                    # Try to detect correct format
+                    if DEBUG:
+                        logger.info("Attempting to correct dimension order")
+                    if W in [1, 3, 4]:  # Width might be channels
+                        image = image.permute(0, 3, 1, 2)
+                        if DEBUG:
+                            logger.info(f"Permuted shape: {image.shape}")
+                
+                # Extract first image from batch
+                image = image[0]
             else:
-                image_np = image
-
-            # Log numpy array shape after conversion
-            logger.info(f"Numpy array shape: {image_np.shape}")
-
-            # Convert from CHW to HWC if necessary
-            if image_np.shape[0] == 3:  # If in CHW format
-                image_np = np.transpose(image_np, (1, 2, 0))
-                logger.info(f"After transpose: {image_np.shape}")
-
-            # Ensure we're working with float values 0-1
-            if image_np.dtype != np.float32:
-                image_np = image_np.astype(np.float32)
+                raise ValueError(f"Expected 4D tensor [B,C,H,W], got shape: {image.shape}")
             
-            # Scale to 0-255 range for OpenCV
-            image_np_uint8 = (image_np * 255).clip(0, 255).astype(np.uint8)
+            # Ensure channels are in valid range
+            if image.shape[0] not in [1, 3, 4]:
+                # Try one last permute if channels are wrong
+                if image.shape[-1] in [1, 3, 4]:
+                    image = image.permute(2, 0, 1)
+                else:
+                    raise ValueError(f"Cannot determine correct channel dimension from shape: {image.shape}")
             
-            # Convert to RGB for OpenCV
-            image_rgb = cv2.cvtColor(image_np_uint8, cv2.COLOR_BGR2RGB)
-            
-            # Convert to grayscale for face detection
-            gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+            # Convert to numpy with safety checks
+            try:
+                image = (image.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
+                if DEBUG:
+                    logger.info(f"Final numpy shape: {image.shape}")
+            except Exception as e:
+                logger.error(f"Tensor conversion failed: {str(e)}")
+                raise ValueError(f"Failed to convert tensor to numpy array: {str(e)}")
 
-            # Detect faces
+        # Validate numpy array
+        if not isinstance(image, np.ndarray):
+            raise ValueError(f"Expected numpy array, got {type(image)}")
+
+        # Ensure image has correct dimensions and channels
+        if len(image.shape) != 3:
+            raise ValueError(f"Expected 3D array (H,W,C), got shape: {image.shape}")
+
+        # Convert to RGB if needed
+        if image.shape[2] == 1:
+            image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+        elif image.shape[2] == 4:
+            image = cv2.cvtColor(image, cv2.COLOR_RGBA2RGB)
+        elif image.shape[2] != 3:
+            raise ValueError(f"Unexpected number of channels: {image.shape[2]}")
+
+        # Convert to grayscale for face detection
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        
+        try:
             faces = self.face_cascade.detectMultiScale(
                 gray,
                 scaleFactor=1.1,
                 minNeighbors=5,
-                minSize=(30, 30)
+                minSize=(min_face_size, min_face_size)
             )
-
-            if len(faces) == 0:
-                logger.info("No faces detected")
-                # Return original image in correct format
-                output = torch.from_numpy(image_np_uint8).float() / 255.0
-                if len(output.shape) == 3:
-                    output = output.permute(2, 0, 1)  # HWC to CHW
-                    output = output.unsqueeze(0)  # Add batch dimension
-                return (output,)
-
-            # Process detected faces
-            cropped_faces = []
-            max_h, max_w = 0, 0
-            
-            # First pass: determine maximum dimensions
-            for (x, y, w, h) in faces:
-                max_h = max(max_h, h)
-                max_w = max(max_w, w)
-
-            # Second pass: crop and resize faces
-            for (x, y, w, h) in faces:
-                face = image_rgb[y:y+h, x:x+w]
-                # Resize to maximum dimensions to ensure consistent size
-                face_resized = cv2.resize(face, (max_w, max_h))
-                cropped_faces.append(face_resized)
-
-            if cropped_faces:
-                # Stack faces vertically
-                stacked_faces = np.vstack(cropped_faces)
-                
-                # Convert to float32 and normalize to 0-1
-                stacked_faces = stacked_faces.astype(np.float32) / 255.0
-                
-                # Convert to torch tensor
-                output = torch.from_numpy(stacked_faces)
-                
-                # Ensure correct channel order (HWC to CHW)
-                if len(output.shape) == 3:
-                    output = output.permute(2, 0, 1)
-                
-                # Add batch dimension if needed
-                if len(output.shape) == 3:
-                    output = output.unsqueeze(0)
-
-                logger.info(f"Final output shape: {output.shape}")
-                return (output,)
-            else:
-                logger.warning("Failed to process faces")
-                # Return original image as fallback
-                output = torch.from_numpy(image_np_uint8).float() / 255.0
-                if len(output.shape) == 3:
-                    output = output.permute(2, 0, 1)
-                    output = output.unsqueeze(0)
-                return (output,)
-
         except Exception as e:
-            logger.error(f"Error in face detection: {str(e)}")
-            # Return original image in case of error
-            output = torch.from_numpy(image_np_uint8).float() / 255.0
-            if len(output.shape) == 3:
-                output = output.permute(2, 0, 1)
-                output = output.unsqueeze(0)
-            return (output,)
+            logger.error(f"Face detection failed: {str(e)}")
+            return (torch.zeros((1, 3, 512, 512)),)
+
+        if len(faces) == 0:
+            logger.warning("No faces detected in image")
+            # Return empty image with correct dimensions
+            return (torch.zeros((1, 3, 512, 512)),)
+
+        cropped_faces = []
+        for x, y, w, h in faces:
+            face_img, _ = self.add_padding(image, (x, y, w, h), padding)
+            cropped_faces.append(face_img)
+
+        if output_mode == "largest_face":
+            largest_face = max(cropped_faces, key=lambda x: x.shape[0] * x.shape[1])
+            cropped_faces = [largest_face]
+
+        # Stack faces horizontally
+        if len(cropped_faces) > 1:
+            max_height = max(face.shape[0] for face in cropped_faces)
+            resized_faces = []
+            for face in cropped_faces:
+                aspect_ratio = face.shape[1] / face.shape[0]
+                new_width = int(max_height * aspect_ratio)
+                resized = cv2.resize(face, (new_width, max_height))
+                resized_faces.append(resized)
+            result = np.hstack(resized_faces)
+        else:
+            result = cropped_faces[0]
+
+        # Convert to tensor format
+        result = torch.from_numpy(result).float() / 255.0
+        result = result.permute(2, 0, 1).unsqueeze(0)
+
+        return (result,)
 
     @classmethod
-    def IS_CHANGED(s, image):
-        return float("NaN")
+    def IS_CHANGED(self):
+        return False
 
 NODE_CLASS_MAPPINGS = {
     "FaceDetectionNode": FaceDetectionNode
