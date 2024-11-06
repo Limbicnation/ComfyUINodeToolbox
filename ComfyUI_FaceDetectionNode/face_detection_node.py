@@ -58,50 +58,39 @@ class FaceDetectionNode:
         return image[y1:y2, x1:x2], (x1, y1, x2-x1, y2-y1)
 
     def detect_and_crop_faces(self, image, detection_threshold, min_face_size, padding, output_mode):
-        # Debug mode for detailed tensor info
         DEBUG = True
         
-        # Convert from tensor format if needed
         if isinstance(image, torch.Tensor):
             if DEBUG:
                 logger.info(f"Raw tensor info - Shape: {image.shape}, Type: {image.dtype}, Device: {image.device}")
             
-            # Handle different tensor formats
-            if len(image.shape) == 4:  # BCHW format
-                B, C, H, W = image.shape
-                if DEBUG:
-                    logger.info(f"Detected BCHW format: {B}x{C}x{H}x{W}")
-                
-                if H < W and C > 4:  # Likely wrong dimension order
-                    # Try to detect correct format
-                    if DEBUG:
-                        logger.info("Attempting to correct dimension order")
-                    if W in [1, 3, 4]:  # Width might be channels
-                        image = image.permute(0, 3, 1, 2)
-                        if DEBUG:
-                            logger.info(f"Permuted shape: {image.shape}")
-                
-                # Extract first image from batch
-                image = image[0]
-            else:
-                raise ValueError(f"Expected 4D tensor [B,C,H,W], got shape: {image.shape}")
+            # Ensure we're working with a batch of images
+            if len(image.shape) == 3:
+                image = image.unsqueeze(0)
             
-            # Ensure channels are in valid range
-            if image.shape[0] not in [1, 3, 4]:
-                # Try one last permute if channels are wrong
-                if image.shape[-1] in [1, 3, 4]:
-                    image = image.permute(2, 0, 1)
-                else:
-                    raise ValueError(f"Cannot determine correct channel dimension from shape: {image.shape}")
+            if len(image.shape) != 4:
+                raise ValueError(f"Expected 3D or 4D tensor, got shape: {image.shape}")
             
-            # Convert to numpy with safety checks
+            B, C, H, W = image.shape
+            
+            # Validate channel dimension
+            if C not in [1, 3, 4]:
+                raise ValueError(f"Expected 1, 3, or 4 channels, got: {C}")
+            
+            # Convert to numpy, ensuring correct format
             try:
-                image = (image.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
-                if DEBUG:
-                    logger.info(f"Final numpy shape: {image.shape}")
+                # Take first image from batch
+                image_np = image[0].permute(1, 2, 0).cpu().numpy()
+                # Scale to 0-255 range if needed
+                if image_np.max() <= 1.0:
+                    image_np = (image_np * 255).astype(np.uint8)
+                else:
+                    image_np = image_np.astype(np.uint8)
             except Exception as e:
                 logger.error(f"Tensor conversion failed: {str(e)}")
                 raise ValueError(f"Failed to convert tensor to numpy array: {str(e)}")
+            
+            image = image_np
 
         # Validate numpy array
         if not isinstance(image, np.ndarray):
@@ -147,9 +136,10 @@ class FaceDetectionNode:
             largest_face = max(cropped_faces, key=lambda x: x.shape[0] * x.shape[1])
             cropped_faces = [largest_face]
 
-        # Stack faces horizontally
+        # Modified result handling
         if len(cropped_faces) > 1:
-            max_height = max(face.shape[0] for face in cropped_faces)
+            # Resize all faces to same height while maintaining aspect ratio
+            max_height = min(512, max(face.shape[0] for face in cropped_faces))
             resized_faces = []
             for face in cropped_faces:
                 aspect_ratio = face.shape[1] / face.shape[0]
@@ -159,11 +149,20 @@ class FaceDetectionNode:
             result = np.hstack(resized_faces)
         else:
             result = cropped_faces[0]
-
-        # Convert to tensor format
+        
+        # Ensure result has correct channel count
+        if result.shape[2] == 1:
+            result = cv2.cvtColor(result, cv2.COLOR_GRAY2RGB)
+        elif result.shape[2] == 4:
+            result = cv2.cvtColor(result, cv2.COLOR_RGBA2RGB)
+        
+        # Convert back to tensor with proper dimensions
         result = torch.from_numpy(result).float() / 255.0
         result = result.permute(2, 0, 1).unsqueeze(0)
-
+        
+        # Validate output tensor
+        assert result.shape[1] == 3, f"Output must have 3 channels, got {result.shape[1]}"
+        
         return (result,)
 
     @classmethod
