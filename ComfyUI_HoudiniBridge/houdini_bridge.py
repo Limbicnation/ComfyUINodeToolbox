@@ -35,8 +35,8 @@ class HoudiniBridge:
                 print(f"Warning: Image not found at {image_path}")
                 return (torch.zeros((1, 3, 64, 64)),)
 
-            # Load the image as grayscale
-            img = Image.open(image_path).convert('L')
+            # Load the image in RGB mode
+            img = Image.open(image_path).convert('RGB')
             
             # Convert to numpy array and ensure float32
             img_np = np.array(img, dtype=np.float32)
@@ -44,14 +44,12 @@ class HoudiniBridge:
             # Normalize to 0-1 range
             img_np = img_np / 255.0
             
-            # Reshape to match expected format (batch, height, width)
+            # Reshape to match expected format (batch, channels, height, width)
+            img_np = img_np.transpose(2, 0, 1)
             img_np = img_np[None, ...]
             
             # Convert to torch tensor
             img_tensor = torch.from_numpy(img_np)
-            
-            # Add channel dimension and repeat to make RGB
-            img_tensor = img_tensor.unsqueeze(1).repeat(1, 3, 1, 1)
             
             print(f"Loaded image shape: {img_tensor.shape}")
             return (img_tensor,)
