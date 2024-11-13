@@ -83,10 +83,11 @@ class DynamicImageLoader:
     
     def _get_empty_image(self) -> Tuple[torch.Tensor, torch.Tensor]:
         """Return empty image and mask tensors"""
-        return (
-            torch.zeros((1, 3, 64, 64), dtype=torch.float32),
-            torch.zeros((1,), dtype=torch.float32)
-        )
+        # Create black RGB image with correct dimensions [B,C,H,W]
+        empty_image = torch.zeros((1, 3, 64, 64), dtype=torch.float32)
+        # Create empty mask with correct dimensions [H,W]
+        empty_mask = torch.zeros((64, 64), dtype=torch.float32)
+        return (empty_image, empty_mask)
     
     @classmethod
     def IS_CHANGED(cls, image_directory: str, image_name: str, reload: int) -> str:
