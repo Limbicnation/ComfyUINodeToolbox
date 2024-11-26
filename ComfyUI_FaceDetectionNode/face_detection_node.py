@@ -166,7 +166,7 @@ class FaceDetectionNode:
         return (result,)
 
     @classmethod
-    def IS_CHANGED(self):
+    def IS_CHANGED(s, **kwargs):
         return False
 
 NODE_CLASS_MAPPINGS = {
