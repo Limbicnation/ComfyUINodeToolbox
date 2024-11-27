@@ -64,6 +64,17 @@ class FaceDetectionNode:
             if DEBUG:
                 logger.info(f"Raw tensor info - Shape: {image.shape}, Type: {image.dtype}, Device: {image.device}")
             
+            # Handle high-dimensional inputs by reshaping
+            if len(image.shape) > 4:
+                logger.warning(f"Input tensor has unusual shape: {image.shape}, attempting to reshape")
+                try:
+                    *batch_dims, C, H, W = image.shape
+                    batch_size = np.prod(batch_dims)
+                    image = image.reshape(batch_size, C, H, W)
+                except Exception as e:
+                    logger.error(f"Failed to reshape tensor: {str(e)}")
+                    raise ValueError(f"Cannot process tensor of shape {image.shape}")
+
             # Ensure we're working with a batch of images
             if len(image.shape) == 3:
                 image = image.unsqueeze(0)
@@ -73,15 +84,15 @@ class FaceDetectionNode:
             
             B, C, H, W = image.shape
             
-            # Validate channel dimension
-            if C not in [1, 3, 4]:
-                raise ValueError(f"Expected 1, 3, or 4 channels, got: {C}")
+            # Convert high-dimensional channels to 3 channels using average pooling
+            if C > 4:
+                logger.warning(f"Input has {C} channels, converting to RGB")
+                image = image[0].view(3, C//3, H, W).mean(dim=1).unsqueeze(0)
+                C = 3
             
             # Convert to numpy, ensuring correct format
             try:
-                # Take first image from batch
                 image_np = image[0].permute(1, 2, 0).cpu().numpy()
-                # Scale to 0-255 range if needed
                 if image_np.max() <= 1.0:
                     image_np = (image_np * 255).astype(np.uint8)
                 else:
@@ -166,7 +177,7 @@ class FaceDetectionNode:
         return (result,)
 
     @classmethod
-    def IS_CHANGED(self):
+    def IS_CHANGED(s, **kwargs):
         return False
 
 NODE_CLASS_MAPPINGS = {
