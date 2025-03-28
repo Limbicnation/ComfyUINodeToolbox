@@ -7,7 +7,11 @@ torch>=1.9.0           # For tensor operations (current: 2.5.1)
 # tensorflow>=2.0.0    # Provides neural style transfer capabilities
 # tensorflow-hub>=0.8.0 # Used for pre-trained style transfer models
 # tensorflow-estimator # May be required by certain TensorFlow Hub models
+# protobuf<=3.20.0     # Specific version to avoid compatibility issues with TensorFlow Hub
 
 # Note: This node includes a fallback implementation that works without 
 # TensorFlow, making these dependencies truly optional. The fallback uses
 # PIL and NumPy for basic style blending.
+
+# Important: The module will automatically set PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
+# to avoid protobuf descriptor issues when using TensorFlow Hub.

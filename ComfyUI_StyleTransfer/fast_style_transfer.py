@@ -37,6 +37,10 @@ class FastStyleTransferNode:
         # Check if TensorFlow is available
         tf_available = False
         try:
+            # Set environment variable to fix protobuf compatibility issues
+            import os
+            os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = 'python'
+            
             import tensorflow as tf
             
             # Patch the TensorFlow compat.v1 module to avoid estimator error if needed
@@ -76,6 +80,10 @@ class FastStyleTransferNode:
         # Check if TensorFlow is available
         tf_available = False
         try:
+            # Set environment variable to fix protobuf compatibility issues
+            import os
+            os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = 'python'
+            
             import tensorflow as tf
             
             # Patch the TensorFlow compat.v1 module to avoid estimator error if needed
@@ -195,6 +203,10 @@ class FastStyleTransferNode:
         # Check if TensorFlow and TensorFlow Hub are available
         tf_hub_available = False
         try:
+            # Set environment variable to fix protobuf compatibility issues
+            import os
+            os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = 'python'
+            
             import tensorflow as tf
             
             # Patch the TensorFlow compat.v1 module to avoid estimator error
@@ -212,6 +224,10 @@ class FastStyleTransferNode:
                 import sys
                 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
                 
+                # Set protobuf implementation to pure Python to avoid descriptor errors
+                logging.info("Using pure-Python implementation of protobuf for TensorFlow Hub compatibility")
+                
+                # Import TensorFlow Hub with patched environment
                 import tensorflow_hub as hub
                 tf_hub_available = True
                 logging.info("TensorFlow Hub available, will use enhanced style transfer")
