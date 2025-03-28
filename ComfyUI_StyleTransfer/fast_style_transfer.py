@@ -22,6 +22,7 @@ class FastStyleTransferNode:
                 "style_image": ("IMAGE",),
                 "output_image_size": ("INT", {"default": 384, "min": 1}),
                 "style_weight": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 10.0, "step": 0.1}),
+                "preserve_color": ("BOOLEAN", {"default": True}),
             }
         }
 
@@ -115,6 +116,12 @@ print(json.dumps(result))
         # Ensure the array is in the correct format (float32 or uint8)
         if np_array.dtype != np.float32:
             np_array = np_array.astype(np.float32)
+            
+        # Ensure we have a 3D array with 3 channels (RGB)
+        if np_array.ndim == 2:  # Single channel without dimension
+            np_array = np.stack([np_array, np_array, np_array], axis=2)
+        elif np_array.ndim == 3 and np_array.shape[2] == 1:  # Single channel with dimension
+            np_array = np.repeat(np_array, 3, axis=2)
         
         return np_array
 
@@ -124,16 +131,21 @@ print(json.dumps(result))
         os.makedirs(os.path.dirname(image_path) or '.', exist_ok=True)
         
         # Ensure the NumPy array has 3 channels (RGB)
-        if np_array.ndim == 3 and np_array.shape[-1] == 1:
-            np_array = np.repeat(np_array, 3, axis=-1)  # Convert grayscale to RGB
-        elif np_array.ndim == 4 and np_array.shape[-1] == 1:
-            np_array = np.repeat(np_array, 3, axis=-1)  # Handle batch dimension for grayscale
+        if np_array.ndim == 2:  # Single channel without dimension
+            np_array = np.stack([np_array, np_array, np_array], axis=2)
+        elif np_array.ndim == 3 and np_array.shape[2] == 1:  # Single channel with dimension
+            np_array = np.repeat(np_array, 3, axis=2)
 
         # Ensure the array is in the correct range (0-255) and type (uint8)
         img = Image.fromarray((np_array * 255).astype(np.uint8))
+        
+        # Explicitly convert to RGB
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+            
         img.save(image_path)
 
-    def apply_style_transfer(self, content_image, style_image, output_image_size=384, style_weight=1.0):
+    def apply_style_transfer(self, content_image, style_image, output_image_size=384, style_weight=1.0, preserve_color=True):
         # Prepare paths for temporary files
         temp_dir = './temp_images'
         os.makedirs(temp_dir, exist_ok=True)
@@ -176,6 +188,7 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 content_path = "{content_image_path}"
 style_path = "{style_image_path}"
 output_size = {output_image_size}
+preserve_color = {str(preserve_color).lower()}
 
 result = {{"success": False, "error": None}}
 
@@ -210,15 +223,53 @@ try:
     result_tensor = hub_module(tf.constant(content_img), tf.constant(style_img))[0]
     result_array = result_tensor.numpy()[0]  # Remove batch dimension
     
-    # Ensure we have 3 channels for RGB
-    if result_array.ndim == 2 or (result_array.ndim == 3 and result_array.shape[-1] == 1):
-        # Convert grayscale to RGB
-        result_array = np.stack([result_array]*3, axis=-1) if result_array.ndim == 2 else np.repeat(result_array, 3, axis=-1)
+    # Apply color preservation if requested
+    if preserve_color:
+        # Keep color from content image but take style from result
+        content_array = tf.image.decode_image(tf.io.read_file(content_path), channels=3).numpy()
+        content_array = tf.image.resize(content_array, tf.shape(result_array)[:2], preserve_aspect_ratio=True).numpy()
+        content_array = content_array / 255.0  # Normalize to 0-1
+
+        # Convert both to YUV color space
+        def rgb_to_yuv(rgb):
+            # Simple RGB to YUV conversion
+            r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+            y = 0.299 * r + 0.587 * g + 0.114 * b
+            u = -0.14713 * r - 0.28886 * g + 0.436 * b
+            v = 0.615 * r - 0.51499 * g - 0.10001 * b
+            return np.stack([y, u, v], axis=-1)
+            
+        def yuv_to_rgb(yuv):
+            # Simple YUV to RGB conversion
+            y, u, v = yuv[..., 0], yuv[..., 1], yuv[..., 2]
+            r = y + 1.13983 * v
+            g = y - 0.39465 * u - 0.58060 * v
+            b = y + 2.03211 * u
+            return np.stack([r, g, b], axis=-1)
+        
+        # Convert to YUV
+        content_yuv = rgb_to_yuv(content_array)
+        style_yuv = rgb_to_yuv(result_array)
+        
+        # Replace the Y channel of the content with Y from style
+        combined_yuv = np.copy(content_yuv)
+        combined_yuv[..., 0] = style_yuv[..., 0]
+        
+        # Convert back to RGB
+        result_array = yuv_to_rgb(combined_yuv)
+        result_array = np.clip(result_array, 0.0, 1.0)  # Ensure valid RGB values
     
-    # Convert to RGB PIL image explicitly
-    result_img = Image.fromarray((result_array * 255).astype(np.uint8)).convert('RGB')
+    # Ensure the result is a 3-channel RGB image
+    if result_array.ndim == 2:
+        result_array = np.stack([result_array, result_array, result_array], axis=-1)
+    elif result_array.ndim == 3 and result_array.shape[-1] == 1:
+        result_array = np.repeat(result_array, 3, axis=-1)
     
     # Convert result to base64 encoded image
+    result_img = Image.fromarray((result_array * 255).astype(np.uint8))
+    if result_img.mode != 'RGB':
+        result_img = result_img.convert('RGB')
+    
     buffer = BytesIO()
     result_img.save(buffer, format="PNG")
     img_str = base64.b64encode(buffer.getvalue()).decode('utf-8')
@@ -248,9 +299,11 @@ print(json.dumps(result))
                                 
                                 img_data = base64.b64decode(tf_result["image"])
                                 img = Image.open(BytesIO(img_data))
-                                # Ensure we're working with an RGB image, not grayscale
+                                
+                                # Ensure the image is in RGB mode
                                 if img.mode != 'RGB':
                                     img = img.convert('RGB')
+                                    
                                 stylized_image = np.array(img).astype(np.float32) / 255.0
                                 
                                 # Convert to PyTorch tensor format
@@ -267,9 +320,9 @@ print(json.dumps(result))
                 except Exception as e:
                     logging.error(f"Error using isolated TensorFlow: {e}")
             
-            # Fallback to simple style blending
+            # Fallback to color-preserving style blending
             logging.info("Using fallback style transfer method")
-            return self.fallback_style_transfer(content_image, style_image, style_weight)
+            return self.fallback_style_transfer(content_image, style_image, style_weight, preserve_color)
                 
         finally:
             # Clean up temporary files
@@ -280,21 +333,10 @@ print(json.dumps(result))
             if os.path.exists(temp_dir) and not os.listdir(temp_dir):
                 os.rmdir(temp_dir)
                 
-    def fallback_style_transfer(self, content_image, style_image, style_weight=1.0):
-        """Simple fallback method for style transfer when TensorFlow Hub is not available"""
+    def fallback_style_transfer(self, content_image, style_image, style_weight=1.0, preserve_color=True):
+        """Enhanced fallback method for style transfer with color preservation"""
         content_np = self.tensor_to_numpy(content_image)
         style_np = self.tensor_to_numpy(style_image)
-        
-        # Ensure we have RGB for both content and style
-        if content_np.ndim == 2:
-            content_np = np.stack([content_np]*3, axis=-1)
-        elif content_np.shape[-1] == 1:
-            content_np = np.repeat(content_np, 3, axis[-1])
-            
-        if style_np.ndim == 2:
-            style_np = np.stack([style_np]*3, axis[-1])
-        elif style_np.shape[-1] == 1:
-            style_np = np.repeat(style_np, 3, axis[-1])
         
         # Resize style image to match content image dimensions
         style_img_resized = np.array(Image.fromarray(
@@ -302,52 +344,35 @@ print(json.dumps(result))
             (content_np.shape[1], content_np.shape[0])))
         style_img_resized = style_img_resized.astype(np.float32) / 255.0
         
-        try:
-            # Try to use scikit-image for color-preserving blend
-            import importlib
-            skimage_spec = importlib.util.find_spec("skimage")
+        if preserve_color:
+            # Convert RGB to YUV for better color preservation
+            def rgb_to_yuv(rgb):
+                r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+                y = 0.299 * r + 0.587 * g + 0.114 * b
+                u = -0.14713 * r - 0.28886 * g + 0.436 * b
+                v = 0.615 * r - 0.51499 * g - 0.10001 * b
+                return np.stack([y, u, v], axis=-1)
+                
+            def yuv_to_rgb(yuv):
+                y, u, v = yuv[..., 0], yuv[..., 1], yuv[..., 2]
+                r = y + 1.13983 * v
+                g = y - 0.39465 * u - 0.58060 * v
+                b = y + 2.03211 * u
+                return np.stack([r, g, b], axis=-1)
             
-            if skimage_spec is not None:
-                from skimage import color
-                # Convert RGB to YUV
-                content_yuv = color.rgb2yuv(content_np)
-                style_yuv = color.rgb2yuv(style_img_resized)
-                
-                # Blend the Y (luminance) channel, keep UV from content
-                result_yuv = content_yuv.copy()
-                # Only blend the luminance (Y) channel
-                alpha = min(max(0.2, style_weight / 5.0), 0.8)  # Map weight to alpha range [0.2, 0.8]
-                result_yuv[..., 0] = (1 - alpha) * content_yuv[..., 0] + alpha * style_yuv[..., 0]
-                
-                # Convert back to RGB
-                result = color.yuv2rgb(result_yuv)
-            else:
-                # Fallback if scikit-image is not available
-                # Simple RGB blending with color preservation technique
-                alpha = min(max(0.2, style_weight / 5.0), 0.8)
-                
-                # Extract luminance using a simple approximation
-                content_lum = 0.299 * content_np[..., 0] + 0.587 * content_np[..., 1] + 0.114 * content_np[..., 2]
-                style_lum = 0.299 * style_img_resized[..., 0] + 0.587 * style_img_resized[..., 1] + 0.114 * style_img_resized[..., 2]
-                
-                # Blend luminance
-                blended_lum = (1 - alpha) * content_lum + alpha * style_lum
-                
-                # Calculate luminance ratios to preserve color
-                lum_ratio = np.zeros_like(content_np)
-                # Avoid division by zero
-                epsilon = 1e-6
-                for i in range(3):
-                    # Calculate the ratio between blended luminance and original content luminance
-                    ratio = blended_lum / (content_lum + epsilon)
-                    # Apply the ratio to each color channel to preserve chrominance
-                    lum_ratio[..., i] = ratio
-                
-                # Apply luminance adjustment while preserving color ratios
-                result = content_np * lum_ratio[..., np.newaxis]
-        except Exception as e:
-            logging.warning(f"Color-preserving blend failed: {e}. Using simple blend.")
-            # Simplest fallback - direct alpha blending
+            # Convert to YUV color space
+            content_yuv = rgb_to_yuv(content_np)
+            style_yuv = rgb_to_yuv(style_img_resized)
+            
+            # Blend the Y (luminance) channel, keep UV (chrominance) from content
+            alpha = min(max(0.2, style_weight / 5.0), 0.8)  # Map weight to alpha range [0.2, 0.8]
+            result_yuv = content_yuv.copy()
+            result_yuv[..., 0] = (1 - alpha) * content_yuv[..., 0] + alpha * style_yuv[..., 0]
+            
+            # Convert back to RGB
+            result = yuv_to_rgb(result_yuv)
+        else:
+            # Simple RGB blending (won't preserve colors)
             alpha = min(max(0.2, style_weight / 5.0), 0.8)
             result = (1 - alpha) * content_np + alpha * style_img_resized
         
