@@ -1,16 +1,8 @@
-# Core dependencies
-numpy>=1.19.0,<1.23.0  # Compatible with TensorFlow and PyTorch
+# Minimal requirements for Fast Style Transfer node
+# These won't conflict with existing packages
 Pillow>=8.0.0          # For image processing
-torch>=1.9.0           # For tensor operations with ComfyUI
+numpy>=1.19.0          # Compatible with existing packages
 
-# Optional TensorFlow dependencies with specific versions for compatibility
-tensorflow>=2.6.0,<2.10.0  # Core TensorFlow package
-tensorflow-hub>=0.12.0    # For neural style transfer models
-protobuf==3.20.0          # CRITICAL: Fixed version for TensorFlow compatibility
-
-# SSL certification (optional)
-certifi>=2021.5.30
-
-# Note: The node includes a fallback method when TensorFlow/Hub 
-# is not available, making TensorFlow dependencies technically optional.
-# If TensorFlow Hub fails to load, a basic style blending fallback will be used.
+# Optional dependencies: 
+# tensorflow and tensorflow-hub are used in an isolated subprocess
+# so specific versions don't need to be installed in the main environment
