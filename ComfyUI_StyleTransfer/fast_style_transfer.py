@@ -50,51 +50,89 @@ class FastStyleTransferNode:
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "apply_style_transfer"
 
-    @staticmethod
-    def validate_image_size(image_path, min_size=(10, 10)):
+    def validate_image_size(self, image_path, min_size=(10, 10)):
         """Validates that the image at image_path is at least min_size."""
-        img = tf.io.read_file(image_path)
-        img = tf.image.decode_image(img, channels=3, expand_animations=False)
-    
-        if img.shape[0] < min_size[0] or img.shape[1] < min_size[1]:
-            raise ValueError(f"Image at {image_path} is too small: {img.shape}. Minimum size required: {min_size}.")
-        return img
+        if USE_TF_HUB:
+            # TensorFlow-based validation
+            img = tf.io.read_file(image_path)
+            img = tf.image.decode_image(img, channels=3, expand_animations=False)
+            
+            if img.shape[0] < min_size[0] or img.shape[1] < min_size[1]:
+                raise ValueError(f"Image at {image_path} is too small: {img.shape}. Minimum size required: {min_size}.")
+            return img
+        else:
+            # PIL-based validation
+            try:
+                with Image.open(image_path) as img:
+                    width, height = img.size
+                    if width < min_size[1] or height < min_size[0]:
+                        raise ValueError(f"Image at {image_path} is too small: {(height, width)}. Minimum size required: {min_size}.")
+                    return np.array(img)
+            except Exception as e:
+                logging.error(f"Error validating image size: {e}")
+                return None
 
     def load_image(self, image_path, image_size=(256, 256), preserve_aspect_ratio=True):
         """Loads an image from a file and resizes it."""
-        # Validate image size before processing
-        self.validate_image_size(image_path)
+        if USE_TF_HUB:
+            # TensorFlow-based image loading
+            # Validate image size before processing
+            self.validate_image_size(image_path)
 
-        img = tf.io.read_file(image_path)
-        img = tf.image.decode_image(img, channels=3, expand_animations=False)
+            img = tf.io.read_file(image_path)
+            img = tf.image.decode_image(img, channels=3, expand_animations=False)
+            logging.debug(f"Original image dimensions: {img.shape}")
 
-        # Logging: Print original image shape
-        logging.debug(f"Original image dimensions: {img.shape}")
+            # Check if the image has valid dimensions
+            if img.shape[0] <= 0 or img.shape[1] <= 0:
+                logging.warning("Invalid image dimensions detected. Returning a placeholder image.")
+                return tf.zeros([1, image_size[0], image_size[1], 3], dtype=tf.float32)
 
-        # Check if the image has valid dimensions
-        if img.shape[0] <= 0 or img.shape[1] <= 0:
-            # Provide a fallback image
-            logging.warning("Invalid image dimensions detected. Returning a placeholder image.")
-            return torch.zeros((1, 3, image_size[1], image_size[0]))
+            img = tf.image.convert_image_dtype(img, tf.float32)
+            logging.debug(f"Target resize dimensions: {image_size}")
 
-        img = tf.image.convert_image_dtype(img, tf.float32)
+            # Ensure the image dimensions are valid before resizing
+            if image_size[0] > 0 and image_size[1] > 0:
+                img = tf.image.resize(img, image_size, preserve_aspect_ratio=preserve_aspect_ratio)
+            else:
+                raise ValueError(f"Invalid target size for resizing: {image_size}")
 
-        # Logging: Print target resize dimensions
-        logging.debug(f"Target resize dimensions: {image_size}")
-
-        # Ensure the image dimensions are valid before resizing
-        if image_size[0] > 0 and image_size[1] > 0:
-            img = tf.image.resize(img, image_size, preserve_aspect_ratio=preserve_aspect_ratio)
+            logging.debug(f"Resized image dimensions: {img.shape}")
+            return img[tf.newaxis, :]
         else:
-            raise ValueError(f"Invalid target size for resizing: {image_size}")
-
-        # Logging: Print resized image shape
-        logging.debug(f"Resized image dimensions: {img.shape}")
-
-        if img.shape[0] <= 0 or img.shape[1] <= 0:
-            raise ValueError(f"Resized image has invalid dimensions: {img.shape}")
-
-        return img[tf.newaxis, :]
+            # PIL-based image loading
+            try:
+                with Image.open(image_path) as img:
+                    # Validate size
+                    width, height = img.size
+                    if width <= 0 or height <= 0:
+                        logging.warning("Invalid image dimensions detected. Returning a placeholder image.")
+                        return np.zeros([1, image_size[0], image_size[1], 3], dtype=np.float32)
+                    
+                    # Resize image
+                    if preserve_aspect_ratio:
+                        # Calculate new dimensions preserving aspect ratio
+                        ratio = min(image_size[0] / height, image_size[1] / width)
+                        new_height = int(height * ratio)
+                        new_width = int(width * ratio)
+                        resized_img = img.resize((new_width, new_height), Image.LANCZOS)
+                    else:
+                        resized_img = img.resize(image_size[::-1], Image.LANCZOS)  # PIL uses (width, height)
+                    
+                    # Convert to numpy array and normalize
+                    np_img = np.array(resized_img, dtype=np.float32) / 255.0
+                    
+                    # Ensure 3 channels
+                    if np_img.ndim == 2:  # Grayscale
+                        np_img = np.stack([np_img, np_img, np_img], axis=-1)
+                    elif np_img.shape[-1] == 4:  # RGBA
+                        np_img = np_img[:, :, :3]
+                    
+                    # Add batch dimension
+                    return np_img[np.newaxis, :]
+            except Exception as e:
+                logging.error(f"Error loading image: {e}")
+                return np.zeros([1, image_size[0], image_size[1], 3], dtype=np.float32)
 
     def tensor_to_numpy(self, tensor):
         """Converts a PyTorch tensor to a NumPy array."""
