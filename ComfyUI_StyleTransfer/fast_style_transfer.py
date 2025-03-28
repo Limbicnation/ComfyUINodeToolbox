@@ -1,18 +1,37 @@
 import os
-import certifi
-import requests
-import tensorflow as tf
-import tensorflow_hub as hub
+import sys
 import numpy as np
 import torch
 from PIL import Image
 import logging
 
-# Set SSL_CERT_FILE environment variable
-os.environ['SSL_CERT_FILE'] = certifi.where()
+# Configure logging with a less verbose level
+logging.basicConfig(level=logging.INFO)
 
-# Configure logging
-logging.basicConfig(level=logging.DEBUG)
+# Initialize flag for TensorFlow availability
+USE_TF_HUB = False
+
+# Safely try to import optional dependencies
+try:
+    import certifi
+    os.environ['SSL_CERT_FILE'] = certifi.where()
+except ImportError:
+    logging.info("certifi not available, skipping SSL certificate setup")
+
+# Try to import TensorFlow but don't attempt to install dependencies
+try:
+    import tensorflow as tf
+    logging.info(f"TensorFlow version: {tf.__version__}")
+    
+    # Try to import TensorFlow Hub
+    try:
+        import tensorflow_hub as hub
+        USE_TF_HUB = True
+        logging.info("TensorFlow Hub available, will use enhanced style transfer")
+    except ImportError:
+        logging.info("TensorFlow Hub not available, will use fallback style transfer method")
+except ImportError:
+    logging.info("TensorFlow not available, will use fallback image processing")
 
 class FastStyleTransferNode:
     CATEGORY = "Image/Style Transfer"
@@ -24,7 +43,7 @@ class FastStyleTransferNode:
                 "content_image": ("IMAGE",),
                 "style_image": ("IMAGE",),
                 "output_image_size": ("INT", {"default": 384, "min": 1}),
-                "target_height": ("INT", {"default": 1024, "min": 1}),
+                "style_weight": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 10.0, "step": 0.1}),
             }
         }
 
@@ -103,7 +122,7 @@ class FastStyleTransferNode:
         img = Image.fromarray((np_array * 255).astype(np.uint8))
         img.save(image_path)
 
-    def apply_style_transfer(self, content_image, style_image, output_image_size=384, target_height=1024):
+    def apply_style_transfer(self, content_image, style_image, output_image_size=384, style_weight=1.0):
         # Prepare paths for temporary files
         temp_dir = './temp_images'
         os.makedirs(temp_dir, exist_ok=True)
@@ -119,36 +138,41 @@ class FastStyleTransferNode:
             self.save_numpy_as_image(content_np, content_image_path)
             self.save_numpy_as_image(style_np, style_image_path)
 
-            # Use requests to download the TensorFlow Hub module
-            hub_url = 'https://tfhub.dev/google/magenta/arbitrary-image-stylization-v1-256/2'
-            response = requests.get(hub_url, verify=certifi.where())
-            if response.status_code == 200:
-                hub_module = hub.load(hub_url)
-
-            # Load and resize the images using TensorFlow
-            content_img = self.load_image(content_image_path, (output_image_size, output_image_size))
-            style_img = self.load_image(style_image_path, (256, 256))
-
-            # Logging: Check dimensions and channels
-            logging.debug(f"Content image shape before model: {content_img.shape}")
-            logging.debug(f"Style image shape before model: {style_img.shape}")
-
-            # Apply the style transfer
-            stylized_image = hub_module(tf.constant(content_img), tf.constant(style_img))[0]
-
-            # Logging: Check the output shape and channels
-            logging.debug(f"Stylized image shape after model: {stylized_image.shape}")
-
-            # Convert the stylized image back to a PyTorch tensor
-            stylized_image = stylized_image.numpy()
+            if USE_TF_HUB:
+                logging.info("Using TensorFlow Hub for style transfer")
+                # Use requests to download the TensorFlow Hub module
+                hub_url = 'https://tfhub.dev/google/magenta/arbitrary-image-stylization-v1-256/2'
+                try:
+                    hub_module = hub.load(hub_url)
+                    
+                    # Load and resize the images using TensorFlow
+                    content_img = self.load_image(content_image_path, (output_image_size, output_image_size))
+                    style_img = self.load_image(style_image_path, (256, 256))
+                    
+                    # Apply the style transfer
+                    stylized_image = hub_module(tf.constant(content_img), tf.constant(style_img))[0]
+                    
+                    # Convert the stylized image back to a PyTorch tensor
+                    stylized_image = stylized_image.numpy()
+                except Exception as e:
+                    logging.error(f"TensorFlow Hub style transfer failed: {e}")
+                    # Fall back to alternative method
+                    stylized_image = self.fallback_style_transfer(content_np, style_np, style_weight)
+            else:
+                logging.info("Using fallback style transfer method")
+                stylized_image = self.fallback_style_transfer(content_np, style_np, style_weight)
 
             # Ensure the output image has 3 channels
-            if stylized_image.shape[-1] == 1:
-                stylized_image = np.repeat(stylized_image, 3, axis=-1)
-
-            stylized_image = torch.from_numpy(stylized_image).permute(0, 3, 1, 2)
-
-            return stylized_image
+            if stylized_image.ndim == 3 and stylized_image.shape[-1] == 1:
+                stylized_image = np.repeat(stylized_image, 3, axis[-1])
+            
+            # Convert to PyTorch tensor format
+            if USE_TF_HUB:
+                stylized_tensor = torch.from_numpy(stylized_image).permute(0, 3, 1, 2)
+            else:
+                stylized_tensor = torch.from_numpy(stylized_image).unsqueeze(0).permute(0, 3, 1, 2)
+                
+            return stylized_tensor
         finally:
             # Clean up temporary files
             if os.path.exists(content_image_path):
@@ -157,6 +181,26 @@ class FastStyleTransferNode:
                 os.remove(style_image_path)
             if os.path.exists(temp_dir) and not os.listdir(temp_dir):
                 os.rmdir(temp_dir)
+                
+    def fallback_style_transfer(self, content_img, style_img, style_weight=1.0):
+        """Simple fallback method for style transfer when TensorFlow Hub is not available"""
+        logging.info("Using basic style blending as fallback")
+        
+        # Resize style image to match content image dimensions
+        style_img_resized = np.array(Image.fromarray(
+            (style_img * 255).astype(np.uint8)).resize(
+            (content_img.shape[1], content_img.shape[0])))
+        style_img_resized = style_img_resized.astype(np.float32) / 255.0
+        
+        # Simple blending of content and style
+        # This is a very basic approach - just a weighted average
+        alpha = min(max(0.2, style_weight / 5.0), 0.8)  # Convert style_weight to alpha in range [0.2, 0.8]
+        result = (1 - alpha) * content_img + alpha * style_img_resized
+        
+        # Ensure result is in proper range
+        result = np.clip(result, 0.0, 1.0)
+        
+        return result
 
 # __init__.py content
 from .fast_style_transfer import FastStyleTransferNode
