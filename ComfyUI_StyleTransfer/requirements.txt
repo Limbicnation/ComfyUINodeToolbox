@@ -1,0 +1,9 @@
+# Base dependencies
+numpy>=1.19.0
+Pillow>=9.0.0
+torch>=1.7.0
+
+# Optional dependencies (commented out as they're not strictly required)
+# tensorflow>=2.0.0  # Optional for enhanced style transfer
+# tensorflow-hub>=0.12.0  # Optional for enhanced style transfer
+# certifi>=2021.10.8  # Optional for SSL certificate handling
