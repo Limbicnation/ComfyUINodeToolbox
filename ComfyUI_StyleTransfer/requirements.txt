@@ -1,17 +1,16 @@
-# Core dependencies for FastStyleTransferNode
-numpy>=1.19.0          # Compatible with your environment (current: 1.26.4)
-Pillow>=9.0.0          # For image processing (current: 10.4.0)
-torch>=1.9.0           # For tensor operations (current: 2.5.1)
+# Core dependencies
+numpy>=1.19.0,<1.23.0  # Compatible with TensorFlow and PyTorch
+Pillow>=8.0.0          # For image processing
+torch>=1.9.0           # For tensor operations with ComfyUI
 
-# Optional TensorFlow components (uncomment to enable enhanced style transfer)
-# tensorflow>=2.0.0    # Provides neural style transfer capabilities
-# tensorflow-hub>=0.8.0 # Used for pre-trained style transfer models
-# tensorflow-estimator # May be required by certain TensorFlow Hub models
-# protobuf<=3.20.0     # Specific version to avoid compatibility issues with TensorFlow Hub
+# Optional TensorFlow dependencies with specific versions for compatibility
+tensorflow>=2.6.0,<2.10.0  # Core TensorFlow package
+tensorflow-hub>=0.12.0    # For neural style transfer models
+protobuf==3.20.0          # CRITICAL: Fixed version for TensorFlow compatibility
 
-# Note: This node includes a fallback implementation that works without 
-# TensorFlow, making these dependencies truly optional. The fallback uses
-# PIL and NumPy for basic style blending.
+# SSL certification (optional)
+certifi>=2021.5.30
 
-# Important: The module will automatically set PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
-# to avoid protobuf descriptor issues when using TensorFlow Hub.
+# Note: The node includes a fallback method when TensorFlow/Hub 
+# is not available, making TensorFlow dependencies technically optional.
+# If TensorFlow Hub fails to load, a basic style blending fallback will be used.
