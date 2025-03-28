@@ -210,8 +210,15 @@ try:
     result_tensor = hub_module(tf.constant(content_img), tf.constant(style_img))[0]
     result_array = result_tensor.numpy()[0]  # Remove batch dimension
     
+    # Ensure we have 3 channels for RGB
+    if result_array.ndim == 2 or (result_array.ndim == 3 and result_array.shape[-1] == 1):
+        # Convert grayscale to RGB
+        result_array = np.stack([result_array]*3, axis=-1) if result_array.ndim == 2 else np.repeat(result_array, 3, axis=-1)
+    
+    # Convert to RGB PIL image explicitly
+    result_img = Image.fromarray((result_array * 255).astype(np.uint8)).convert('RGB')
+    
     # Convert result to base64 encoded image
-    result_img = Image.fromarray((result_array * 255).astype(np.uint8))
     buffer = BytesIO()
     result_img.save(buffer, format="PNG")
     img_str = base64.b64encode(buffer.getvalue()).decode('utf-8')
@@ -241,6 +248,9 @@ print(json.dumps(result))
                                 
                                 img_data = base64.b64decode(tf_result["image"])
                                 img = Image.open(BytesIO(img_data))
+                                # Ensure we're working with an RGB image, not grayscale
+                                if img.mode != 'RGB':
+                                    img = img.convert('RGB')
                                 stylized_image = np.array(img).astype(np.float32) / 255.0
                                 
                                 # Convert to PyTorch tensor format
@@ -275,15 +285,71 @@ print(json.dumps(result))
         content_np = self.tensor_to_numpy(content_image)
         style_np = self.tensor_to_numpy(style_image)
         
+        # Ensure we have RGB for both content and style
+        if content_np.ndim == 2:
+            content_np = np.stack([content_np]*3, axis=-1)
+        elif content_np.shape[-1] == 1:
+            content_np = np.repeat(content_np, 3, axis[-1])
+            
+        if style_np.ndim == 2:
+            style_np = np.stack([style_np]*3, axis[-1])
+        elif style_np.shape[-1] == 1:
+            style_np = np.repeat(style_np, 3, axis[-1])
+        
         # Resize style image to match content image dimensions
         style_img_resized = np.array(Image.fromarray(
             (style_np * 255).astype(np.uint8)).resize(
             (content_np.shape[1], content_np.shape[0])))
         style_img_resized = style_img_resized.astype(np.float32) / 255.0
         
-        # Simple blending of content and style
-        alpha = min(max(0.2, style_weight / 5.0), 0.8)  # Map weight to alpha range [0.2, 0.8]
-        result = (1 - alpha) * content_np + alpha * style_img_resized
+        try:
+            # Try to use scikit-image for color-preserving blend
+            import importlib
+            skimage_spec = importlib.util.find_spec("skimage")
+            
+            if skimage_spec is not None:
+                from skimage import color
+                # Convert RGB to YUV
+                content_yuv = color.rgb2yuv(content_np)
+                style_yuv = color.rgb2yuv(style_img_resized)
+                
+                # Blend the Y (luminance) channel, keep UV from content
+                result_yuv = content_yuv.copy()
+                # Only blend the luminance (Y) channel
+                alpha = min(max(0.2, style_weight / 5.0), 0.8)  # Map weight to alpha range [0.2, 0.8]
+                result_yuv[..., 0] = (1 - alpha) * content_yuv[..., 0] + alpha * style_yuv[..., 0]
+                
+                # Convert back to RGB
+                result = color.yuv2rgb(result_yuv)
+            else:
+                # Fallback if scikit-image is not available
+                # Simple RGB blending with color preservation technique
+                alpha = min(max(0.2, style_weight / 5.0), 0.8)
+                
+                # Extract luminance using a simple approximation
+                content_lum = 0.299 * content_np[..., 0] + 0.587 * content_np[..., 1] + 0.114 * content_np[..., 2]
+                style_lum = 0.299 * style_img_resized[..., 0] + 0.587 * style_img_resized[..., 1] + 0.114 * style_img_resized[..., 2]
+                
+                # Blend luminance
+                blended_lum = (1 - alpha) * content_lum + alpha * style_lum
+                
+                # Calculate luminance ratios to preserve color
+                lum_ratio = np.zeros_like(content_np)
+                # Avoid division by zero
+                epsilon = 1e-6
+                for i in range(3):
+                    # Calculate the ratio between blended luminance and original content luminance
+                    ratio = blended_lum / (content_lum + epsilon)
+                    # Apply the ratio to each color channel to preserve chrominance
+                    lum_ratio[..., i] = ratio
+                
+                # Apply luminance adjustment while preserving color ratios
+                result = content_np * lum_ratio[..., np.newaxis]
+        except Exception as e:
+            logging.warning(f"Color-preserving blend failed: {e}. Using simple blend.")
+            # Simplest fallback - direct alpha blending
+            alpha = min(max(0.2, style_weight / 5.0), 0.8)
+            result = (1 - alpha) * content_np + alpha * style_img_resized
         
         # Ensure result is in proper range
         result = np.clip(result, 0.0, 1.0)

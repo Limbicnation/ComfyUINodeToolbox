@@ -1,8 +1,10 @@
-# Minimal requirements for Fast Style Transfer node
-# These won't conflict with existing packages
-Pillow>=8.0.0          # For image processing
-numpy>=1.19.0          # Compatible with existing packages
+# Core dependencies
+numpy>=1.19.0
+Pillow>=8.0.0
 
-# Optional dependencies: 
-# tensorflow and tensorflow-hub are used in an isolated subprocess
-# so specific versions don't need to be installed in the main environment
+# Optional for enhanced color preservation
+scikit-image>=0.18.0
+
+# For TensorFlow support (optional)
+# tensorflow>=2.4.0
+# tensorflow-hub>=0.12.0
