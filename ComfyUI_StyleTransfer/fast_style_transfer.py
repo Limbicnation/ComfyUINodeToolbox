@@ -320,8 +320,8 @@ print(json.dumps(result))
                 except Exception as e:
                     logging.error(f"Error using isolated TensorFlow: {e}")
             
-            # Fallback to color-preserving style blending
-            logging.info("Using fallback style transfer method")
+            # Fallback to enhanced style blending
+            logging.info("Using enhanced fallback style transfer method")
             return self.fallback_style_transfer(content_image, style_image, style_weight, preserve_color)
                 
         finally:
@@ -364,17 +364,31 @@ print(json.dumps(result))
             content_yuv = rgb_to_yuv(content_np)
             style_yuv = rgb_to_yuv(style_img_resized)
             
+            # Apply contrast enhancement to style Y channel to emphasize texture patterns
+            style_y = style_yuv[..., 0]
+            mean_style = np.mean(style_y)
+            style_y_enhanced = mean_style + (style_y - mean_style) * 1.2  # Boost contrast by 20%
+            style_yuv[..., 0] = np.clip(style_y_enhanced, 0.0, 1.0)
+            
             # Blend the Y (luminance) channel, keep UV (chrominance) from content
-            alpha = min(max(0.2, style_weight / 5.0), 0.8)  # Map weight to alpha range [0.2, 0.8]
+            alpha = min(max(0.3, style_weight / 4.0), 0.9)  # Stronger style influence
             result_yuv = content_yuv.copy()
             result_yuv[..., 0] = (1 - alpha) * content_yuv[..., 0] + alpha * style_yuv[..., 0]
             
             # Convert back to RGB
             result = yuv_to_rgb(result_yuv)
         else:
-            # Simple RGB blending (won't preserve colors)
-            alpha = min(max(0.2, style_weight / 5.0), 0.8)
-            result = (1 - alpha) * content_np + alpha * style_img_resized
+            # Enhanced RGB blending with contrast boost
+            style_enhanced = style_img_resized.copy()
+            
+            # Enhance contrast to emphasize style patterns
+            mean_style = np.mean(style_enhanced, axis=(0, 1), keepdims=True)
+            style_enhanced = mean_style + (style_enhanced - mean_style) * 1.3  # Boost contrast by 30%
+            style_enhanced = np.clip(style_enhanced, 0.0, 1.0)
+            
+            # Apply stronger alpha for direct style transfer
+            alpha = min(max(0.3, style_weight / 4.0), 0.9)
+            result = (1 - alpha) * content_np + alpha * style_enhanced
         
         # Ensure result is in proper range
         result = np.clip(result, 0.0, 1.0)
