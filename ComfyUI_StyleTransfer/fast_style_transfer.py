@@ -166,6 +166,12 @@ class FastStyleTransferNode:
 
     def save_numpy_as_image(self, np_array, image_path):
         """Saves a NumPy array as an image file."""
+        # Import os here to ensure it's available
+        import os
+        
+        # Ensure the directory exists
+        os.makedirs(os.path.dirname(image_path), exist_ok=True)
+        
         # Ensure the NumPy array has 3 channels (RGB)
         if np_array.ndim == 3 and np_array.shape[-1] == 1:
             np_array = np.repeat(np_array, 3, axis=-1)  # Convert grayscale to RGB by repeating channels
@@ -177,6 +183,9 @@ class FastStyleTransferNode:
         img.save(image_path)
 
     def apply_style_transfer(self, content_image, style_image, output_image_size=384, style_weight=1.0):
+        # Import os here to ensure it's available
+        import os
+        
         # Prepare paths for temporary files
         temp_dir = './temp_images'
         os.makedirs(temp_dir, exist_ok=True)
@@ -200,7 +209,6 @@ class FastStyleTransferNode:
             
             try:
                 # Set PYTHONPATH to avoid issues with TensorFlow Hub importing
-                import os
                 import sys
                 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
                 
@@ -302,6 +310,9 @@ class FastStyleTransferNode:
                 
             return stylized_tensor
         finally:
+            # Import os here to make sure it's available in the finally block
+            import os
+            
             # Clean up temporary files
             if os.path.exists(content_image_path):
                 os.remove(content_image_path)
