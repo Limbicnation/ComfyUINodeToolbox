@@ -1,0 +1,10 @@
+# Core dependencies
+numpy>=1.19.0
+Pillow>=8.0.0
+
+# Optional for enhanced color preservation
+scikit-image>=0.18.0
+
+# For TensorFlow support (optional)
+# tensorflow>=2.4.0
+# tensorflow-hub>=0.12.0
