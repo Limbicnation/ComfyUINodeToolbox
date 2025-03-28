@@ -38,6 +38,15 @@ class FastStyleTransferNode:
         tf_available = False
         try:
             import tensorflow as tf
+            
+            # Patch the TensorFlow compat.v1 module to avoid estimator error if needed
+            if not hasattr(tf.compat.v1, 'estimator'):
+                class DummyEstimator:
+                    class Exporter:
+                        pass
+                # Add a dummy estimator to avoid the AttributeError
+                setattr(tf.compat.v1, 'estimator', DummyEstimator)
+                
             tf_available = True
         except ImportError:
             pass
@@ -68,6 +77,15 @@ class FastStyleTransferNode:
         tf_available = False
         try:
             import tensorflow as tf
+            
+            # Patch the TensorFlow compat.v1 module to avoid estimator error if needed
+            if not hasattr(tf.compat.v1, 'estimator'):
+                class DummyEstimator:
+                    class Exporter:
+                        pass
+                # Add a dummy estimator to avoid the AttributeError
+                setattr(tf.compat.v1, 'estimator', DummyEstimator)
+                
             tf_available = True
         except ImportError:
             pass
@@ -169,12 +187,30 @@ class FastStyleTransferNode:
         tf_hub_available = False
         try:
             import tensorflow as tf
+            
+            # Patch the TensorFlow compat.v1 module to avoid estimator error
+            # This is a workaround for the missing estimator module in some TensorFlow installations
+            if not hasattr(tf.compat.v1, 'estimator'):
+                logging.info("Patching TensorFlow to handle missing estimator module")
+                class DummyEstimator:
+                    class Exporter:
+                        pass
+                # Add a dummy estimator to avoid the AttributeError
+                setattr(tf.compat.v1, 'estimator', DummyEstimator)
+            
             try:
+                # Set PYTHONPATH to avoid issues with TensorFlow Hub importing
+                import os
+                import sys
+                sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+                
                 import tensorflow_hub as hub
                 tf_hub_available = True
                 logging.info("TensorFlow Hub available, will use enhanced style transfer")
             except ImportError:
                 logging.info("TensorFlow Hub not available, will use fallback style transfer method")
+            except AttributeError as e:
+                logging.info(f"TensorFlow Hub attribute error: {e}. Using fallback.")
         except ImportError:
             logging.info("TensorFlow not available, will use fallback image processing")
 
@@ -192,7 +228,50 @@ class FastStyleTransferNode:
                 # Use TensorFlow Hub module
                 hub_url = 'https://tfhub.dev/google/magenta/arbitrary-image-stylization-v1-256/2'
                 try:
-                    hub_module = hub.load(hub_url)
+                    # Create a monkeypatch for the estimator module if needed
+                    def monkeypatch_hub_load():
+                        # Store the original __import__ function
+                        original_import = __import__
+                        
+                        # Define our custom import function
+                        def custom_import(name, globals=None, locals=None, fromlist=(), level=0):
+                            # If trying to import tensorflow_estimator, return a dummy module
+                            if name == 'tensorflow_estimator' or name.startswith('tensorflow_estimator.'):
+                                class DummyEstimatorModule:
+                                    class python:
+                                        class estimator:
+                                            class SessionRunHook:
+                                                pass
+                                            class EvalSpec:
+                                                pass
+                                            class TrainSpec:
+                                                pass
+                                            class Exporter:
+                                                pass
+                                            class LatestExporter:
+                                                pass
+                                return DummyEstimatorModule()
+                            # For everything else, use the original import
+                            return original_import(name, globals, locals, fromlist, level)
+                        
+                        # Replace the built-in __import__ function
+                        __builtins__['__import__'] = custom_import
+                        
+                        try:
+                            # Try loading the hub module with our patched import
+                            module = hub.load(hub_url)
+                            return module
+                        finally:
+                            # Restore the original __import__ function
+                            __builtins__['__import__'] = original_import
+                    
+                    # Try to load the module with our monkeypatch
+                    try:
+                        hub_module = monkeypatch_hub_load()
+                    except Exception as import_error:
+                        logging.error(f"Advanced TensorFlow Hub monkeypatching failed: {import_error}")
+                        # Try the regular way as fallback
+                        hub_module = hub.load(hub_url)
                     
                     # Load and resize the images using TensorFlow
                     content_img = self.load_image(content_image_path, (output_image_size, output_image_size))
