@@ -1,9 +1,13 @@
-# Base dependencies
-numpy>=1.19.0
-Pillow>=9.0.0
-torch>=1.7.0
+# Core dependencies for FastStyleTransferNode
+numpy>=1.19.0          # Compatible with your environment (current: 1.26.4)
+Pillow>=9.0.0          # For image processing (current: 10.4.0)
+torch>=1.9.0           # For tensor operations (current: 2.5.1)
 
-# Optional dependencies (commented out as they're not strictly required)
-# tensorflow>=2.0.0  # Optional for enhanced style transfer
-# tensorflow-hub>=0.12.0  # Optional for enhanced style transfer
-# certifi>=2021.10.8  # Optional for SSL certificate handling
+# Optional TensorFlow components (uncomment to enable enhanced style transfer)
+# tensorflow>=2.0.0    # Provides neural style transfer capabilities
+# tensorflow-hub>=0.8.0 # Used for pre-trained style transfer models
+# tensorflow-estimator # May be required by certain TensorFlow Hub models
+
+# Note: This node includes a fallback implementation that works without 
+# TensorFlow, making these dependencies truly optional. The fallback uses
+# PIL and NumPy for basic style blending.
