@@ -33,6 +33,7 @@ class FaceDetectionNode:
                     "step": 8
                 }),
                 "output_mode": (["largest_face", "all_faces"],),
+                "classifier_type": (["haar", "lbp"], {"default": "haar"}),
             }
         }
 
@@ -42,7 +43,22 @@ class FaceDetectionNode:
     CATEGORY = "image/processing"
 
     def __init__(self):
-        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        try:
+            self.haar_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+            self.lbp_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'lbpcascade_frontalface_improved.xml')
+            
+            # Verify cascades loaded successfully
+            if self.haar_cascade.empty():
+                logger.error("Failed to load Haar cascade classifier")
+                self.haar_cascade = None
+            if self.lbp_cascade.empty():
+                logger.error("Failed to load LBP cascade classifier")
+                self.lbp_cascade = None
+                
+        except Exception as e:
+            logger.error(f"Error initializing cascade classifiers: {str(e)}")
+            self.haar_cascade = None
+            self.lbp_cascade = None
 
     def add_padding(self, image: np.ndarray, face_rect: Tuple[int, int, int, int], padding: int) -> Tuple[np.ndarray, Tuple[int, int, int, int]]:
         """Add padding around detected face and handle boundaries"""
@@ -57,7 +73,7 @@ class FaceDetectionNode:
         
         return image[y1:y2, x1:x2], (x1, y1, x2-x1, y2-y1)
 
-    def detect_and_crop_faces(self, image, detection_threshold, min_face_size, padding, output_mode):
+    def detect_and_crop_faces(self, image, detection_threshold, min_face_size, padding, output_mode, classifier_type):
         DEBUG = True
         
         if isinstance(image, torch.Tensor):
@@ -122,8 +138,24 @@ class FaceDetectionNode:
         # Convert to grayscale for face detection
         gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
         
+        # Select appropriate cascade based on classifier_type
+        if classifier_type == "lbp":
+            if self.lbp_cascade is None:
+                logger.warning("LBP cascade not available, falling back to Haar")
+                if self.haar_cascade is None:
+                    logger.error("No cascade classifiers available")
+                    return (torch.zeros((1, 3, 512, 512)),)
+                face_cascade = self.haar_cascade
+            else:
+                face_cascade = self.lbp_cascade
+        else:
+            if self.haar_cascade is None:
+                logger.error("Haar cascade not available")
+                return (torch.zeros((1, 3, 512, 512)),)
+            face_cascade = self.haar_cascade
+        
         try:
-            faces = self.face_cascade.detectMultiScale(
+            faces = face_cascade.detectMultiScale(
                 gray,
                 scaleFactor=1.1,
                 minNeighbors=5,
