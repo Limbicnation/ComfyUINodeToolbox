@@ -2,10 +2,13 @@ import cv2
 import numpy as np
 import torch
 import logging
+import os
 from PIL import Image
 from typing import Tuple, List, Optional
 
-logging.basicConfig(level=logging.INFO)
+# Configure logging level from environment variable
+log_level = os.getenv('COMFYUI_FACE_DETECTION_LOG_LEVEL', 'INFO').upper()
+logging.basicConfig(level=getattr(logging, log_level, logging.INFO))
 logger = logging.getLogger(__name__)
 
 class FaceDetectionNode:
@@ -35,7 +38,7 @@ class FaceDetectionNode:
                 "output_mode": (["largest_face", "all_faces"],),
             },
             "optional": {
-                "classifier_type": (["haar", "lbp"], {"default": "haar"}),
+                "classifier_type": (["default", "alternative"], {"default": "default"}),
             }
         }
 
@@ -45,24 +48,34 @@ class FaceDetectionNode:
     CATEGORY = "image/processing"
 
     def __init__(self):
+        self.default_cascade = None
+        self.alternative_cascade = None
+        
         try:
-            self.haar_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+            # Default Haar cascade - most commonly used and well-tested
+            default_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+            if os.path.exists(default_path):
+                self.default_cascade = cv2.CascadeClassifier(default_path)
+                if self.default_cascade.empty():
+                    logger.error(f"Failed to load cascade from {default_path}")
+                    self.default_cascade = None
+            else:
+                logger.error(f"Default cascade file not found: {default_path}")
             
-            # Use alternative Haar cascade for LBP option since true LBP cascades aren't available
-            self.lbp_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_alt.xml')
-            
-            # Verify cascades loaded successfully
-            if self.haar_cascade.empty():
-                logger.error("Failed to load Haar cascade classifier")
-                self.haar_cascade = None
-            if self.lbp_cascade.empty():
-                logger.warning("Alternative cascade not available, will use default Haar")
-                self.lbp_cascade = None
+            # Alternative Haar cascade - different training, may detect faces missed by default
+            alt_path = cv2.data.haarcascades + 'haarcascade_frontalface_alt.xml'
+            if os.path.exists(alt_path):
+                self.alternative_cascade = cv2.CascadeClassifier(alt_path)
+                if self.alternative_cascade.empty():
+                    logger.warning(f"Failed to load alternative cascade from {alt_path}")
+                    self.alternative_cascade = None
+            else:
+                logger.warning(f"Alternative cascade file not found: {alt_path}")
                 
         except Exception as e:
             logger.error(f"Error initializing cascade classifiers: {str(e)}")
-            self.haar_cascade = None
-            self.lbp_cascade = None
+            self.default_cascade = None
+            self.alternative_cascade = None
 
     def add_padding(self, image: np.ndarray, face_rect: Tuple[int, int, int, int], padding: int) -> Tuple[np.ndarray, Tuple[int, int, int, int]]:
         """Add padding around detected face and handle boundaries"""
@@ -77,93 +90,67 @@ class FaceDetectionNode:
         
         return image[y1:y2, x1:x2], (x1, y1, x2-x1, y2-y1)
 
-    def detect_and_crop_faces(self, image, detection_threshold, min_face_size, padding, output_mode, classifier_type="haar"):
-        DEBUG = True
+    def detect_and_crop_faces(self, image, detection_threshold, min_face_size, padding, output_mode, classifier_type="default"):
         
+        # Convert input to numpy array for OpenCV processing
         if isinstance(image, torch.Tensor):
-            if DEBUG:
-                logger.info(f"Raw tensor info - Shape: {image.shape}, Type: {image.dtype}, Device: {image.device}")
+            logger.debug(f"Processing tensor - Shape: {image.shape}, Type: {image.dtype}")
             
-            # Handle high-dimensional inputs by reshaping
-            if len(image.shape) > 4:
-                logger.warning(f"Input tensor has unusual shape: {image.shape}, attempting to reshape")
-                try:
-                    *batch_dims, C, H, W = image.shape
-                    batch_size = np.prod(batch_dims)
-                    image = image.reshape(batch_size, C, H, W)
-                except Exception as e:
-                    logger.error(f"Failed to reshape tensor: {str(e)}")
-                    raise ValueError(f"Cannot process tensor of shape {image.shape}")
-
-            # Ensure we're working with a batch of images
+            # Ensure 4D tensor [B, H, W, C] and normalize to RGB
             if len(image.shape) == 3:
                 image = image.unsqueeze(0)
-            
-            if len(image.shape) != 4:
+            elif len(image.shape) != 4:
                 raise ValueError(f"Expected 3D or 4D tensor, got shape: {image.shape}")
             
-            # ComfyUI tensor format is [B, H, W, C]
             B, H, W, C = image.shape
             
-            # Convert high-dimensional channels to 3 channels
-            if C > 4:
-                logger.warning(f"Input has {C} channels, converting to RGB")
-                # Take first 3 channels if available, otherwise use mean across all channels
-                if C >= 3:
-                    image = image[:, :3, :, :]
-                else:
-                    # Replicate single channel to RGB
-                    image = image.repeat(1, 3, 1, 1)
-                C = 3
+            # Handle different channel configurations
+            if C == 1:
+                image = image.repeat(1, 1, 1, 3)  # Grayscale to RGB
+            elif C == 4:
+                image = image[:, :, :, :3]  # RGBA to RGB
+            elif C > 4:
+                logger.warning(f"Input has {C} channels, using first 3")
+                image = image[:, :, :, :3]
+            elif C != 3:
+                raise ValueError(f"Cannot handle {C} channels")
             
-            # Convert to numpy, ensuring correct format
-            try:
-                # ComfyUI format is [B, H, W, C], so take first batch item
-                image_np = image[0].cpu().numpy()
-                if image_np.max() <= 1.0:
-                    image_np = (image_np * 255).astype(np.uint8)
-                else:
-                    image_np = image_np.astype(np.uint8)
-            except Exception as e:
-                logger.error(f"Tensor conversion failed: {str(e)}")
-                raise ValueError(f"Failed to convert tensor to numpy array: {str(e)}")
-            
-            image = image_np
+            # Single conversion: tensor -> numpy (uint8)
+            image_np = image[0].cpu().numpy()
+            if image_np.max() <= 1.0:
+                image_np = (image_np * 255).astype(np.uint8)
+            else:
+                image_np = np.clip(image_np, 0, 255).astype(np.uint8)
+                
+        else:
+            # Already numpy array
+            image_np = image
 
-        # Validate numpy array
-        if not isinstance(image, np.ndarray):
-            raise ValueError(f"Expected numpy array, got {type(image)}")
-
-        # Ensure image has correct dimensions and channels
-        if len(image.shape) != 3:
-            raise ValueError(f"Expected 3D array (H,W,C), got shape: {image.shape}")
-
-        # Convert to RGB if needed
-        if image.shape[2] == 1:
-            image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
-        elif image.shape[2] == 4:
-            image = cv2.cvtColor(image, cv2.COLOR_RGBA2RGB)
-        elif image.shape[2] != 3:
-            raise ValueError(f"Unexpected number of channels: {image.shape[2]}")
+        # Validate and ensure RGB format
+        if not isinstance(image_np, np.ndarray) or len(image_np.shape) != 3:
+            raise ValueError(f"Expected 3D numpy array, got {type(image_np)} with shape {getattr(image_np, 'shape', 'unknown')}")
+        
+        if image_np.shape[2] != 3:
+            raise ValueError(f"Expected RGB image (3 channels), got {image_np.shape[2]} channels")
 
         # Convert to grayscale for face detection
-        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
         
         # Select appropriate cascade based on classifier_type
-        if classifier_type == "lbp":
-            if self.lbp_cascade is None:
-                logger.warning("LBP cascade not available, falling back to Haar")
-                if self.haar_cascade is None:
+        if classifier_type == "alternative":
+            if self.alternative_cascade is None:
+                logger.warning("Alternative Haar cascade not available, falling back to default")
+                if self.default_cascade is None:
                     logger.error("No cascade classifiers available")
                     return (torch.zeros((1, 512, 512, 3)),)
-                face_cascade = self.haar_cascade
+                face_cascade = self.default_cascade
             else:
-                face_cascade = self.lbp_cascade
-        else:
-            if self.haar_cascade is None:
-                logger.error("Haar cascade not available")
+                face_cascade = self.alternative_cascade
+        else:  # default
+            if self.default_cascade is None:
+                logger.error("Default Haar cascade not available")
                 return (torch.zeros((1, 512, 512, 3)),)
-            face_cascade = self.haar_cascade
+            face_cascade = self.default_cascade
         
         try:
             faces = face_cascade.detectMultiScale(
@@ -183,7 +170,7 @@ class FaceDetectionNode:
 
         cropped_faces = []
         for x, y, w, h in faces:
-            face_img, _ = self.add_padding(image, (x, y, w, h), padding)
+            face_img, _ = self.add_padding(image_np, (x, y, w, h), padding)
             cropped_faces.append(face_img)
 
         if output_mode == "largest_face":
