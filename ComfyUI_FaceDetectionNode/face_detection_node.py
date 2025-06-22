@@ -33,6 +33,8 @@ class FaceDetectionNode:
                     "step": 8
                 }),
                 "output_mode": (["largest_face", "all_faces"],),
+            },
+            "optional": {
                 "classifier_type": (["haar", "lbp"], {"default": "haar"}),
             }
         }
@@ -45,14 +47,16 @@ class FaceDetectionNode:
     def __init__(self):
         try:
             self.haar_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-            self.lbp_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'lbpcascade_frontalface_improved.xml')
+            
+            # Use alternative Haar cascade for LBP option since true LBP cascades aren't available
+            self.lbp_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_alt.xml')
             
             # Verify cascades loaded successfully
             if self.haar_cascade.empty():
                 logger.error("Failed to load Haar cascade classifier")
                 self.haar_cascade = None
             if self.lbp_cascade.empty():
-                logger.error("Failed to load LBP cascade classifier")
+                logger.warning("Alternative cascade not available, will use default Haar")
                 self.lbp_cascade = None
                 
         except Exception as e:
@@ -73,7 +77,7 @@ class FaceDetectionNode:
         
         return image[y1:y2, x1:x2], (x1, y1, x2-x1, y2-y1)
 
-    def detect_and_crop_faces(self, image, detection_threshold, min_face_size, padding, output_mode, classifier_type):
+    def detect_and_crop_faces(self, image, detection_threshold, min_face_size, padding, output_mode, classifier_type="haar"):
         DEBUG = True
         
         if isinstance(image, torch.Tensor):
@@ -98,17 +102,24 @@ class FaceDetectionNode:
             if len(image.shape) != 4:
                 raise ValueError(f"Expected 3D or 4D tensor, got shape: {image.shape}")
             
-            B, C, H, W = image.shape
+            # ComfyUI tensor format is [B, H, W, C]
+            B, H, W, C = image.shape
             
-            # Convert high-dimensional channels to 3 channels using average pooling
+            # Convert high-dimensional channels to 3 channels
             if C > 4:
                 logger.warning(f"Input has {C} channels, converting to RGB")
-                image = image[0].view(3, C//3, H, W).mean(dim=1).unsqueeze(0)
+                # Take first 3 channels if available, otherwise use mean across all channels
+                if C >= 3:
+                    image = image[:, :3, :, :]
+                else:
+                    # Replicate single channel to RGB
+                    image = image.repeat(1, 3, 1, 1)
                 C = 3
             
             # Convert to numpy, ensuring correct format
             try:
-                image_np = image[0].permute(1, 2, 0).cpu().numpy()
+                # ComfyUI format is [B, H, W, C], so take first batch item
+                image_np = image[0].cpu().numpy()
                 if image_np.max() <= 1.0:
                     image_np = (image_np * 255).astype(np.uint8)
                 else:
@@ -144,14 +155,14 @@ class FaceDetectionNode:
                 logger.warning("LBP cascade not available, falling back to Haar")
                 if self.haar_cascade is None:
                     logger.error("No cascade classifiers available")
-                    return (torch.zeros((1, 3, 512, 512)),)
+                    return (torch.zeros((1, 512, 512, 3)),)
                 face_cascade = self.haar_cascade
             else:
                 face_cascade = self.lbp_cascade
         else:
             if self.haar_cascade is None:
                 logger.error("Haar cascade not available")
-                return (torch.zeros((1, 3, 512, 512)),)
+                return (torch.zeros((1, 512, 512, 3)),)
             face_cascade = self.haar_cascade
         
         try:
@@ -163,12 +174,12 @@ class FaceDetectionNode:
             )
         except Exception as e:
             logger.error(f"Face detection failed: {str(e)}")
-            return (torch.zeros((1, 3, 512, 512)),)
+            return (torch.zeros((1, 512, 512, 3)),)
 
         if len(faces) == 0:
             logger.warning("No faces detected in image")
-            # Return empty image with correct dimensions
-            return (torch.zeros((1, 3, 512, 512)),)
+            # Return empty image with correct dimensions [B, H, W, C]
+            return (torch.zeros((1, 512, 512, 3)),)
 
         cropped_faces = []
         for x, y, w, h in faces:
@@ -199,12 +210,12 @@ class FaceDetectionNode:
         elif result.shape[2] == 4:
             result = cv2.cvtColor(result, cv2.COLOR_RGBA2RGB)
         
-        # Convert back to tensor with proper dimensions
+        # Convert back to tensor with proper dimensions [B, H, W, C]
         result = torch.from_numpy(result).float() / 255.0
-        result = result.permute(2, 0, 1).unsqueeze(0)
+        result = result.unsqueeze(0)  # Add batch dimension
         
-        # Validate output tensor
-        assert result.shape[1] == 3, f"Output must have 3 channels, got {result.shape[1]}"
+        # Validate output tensor (format: [B, H, W, C])
+        assert result.shape[3] == 3, f"Output must have 3 channels, got {result.shape[3]}"
         
         return (result,)
 
