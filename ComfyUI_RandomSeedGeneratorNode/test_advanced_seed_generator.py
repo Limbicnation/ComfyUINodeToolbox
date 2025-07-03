@@ -127,27 +127,71 @@ class TestAdvancedSeedGenerator:
         assert result == (98,)
         assert AdvancedSeedGenerator._last_seed == 98
 
-    def test_increment_overflow(self):
-        """Test increment mode handles overflow correctly."""
+    def test_increment_overflow_wrap(self):
+        """Test increment mode handles overflow with wrap behavior."""
         generator = AdvancedSeedGenerator()
         
         # Set to max value
         AdvancedSeedGenerator._last_seed = AdvancedSeedGenerator.MAX_SEED_VALUE
         
-        result = generator.generate_seed("increment", 0, sync_libraries=False)
+        result = generator.generate_seed("increment", 0, sync_libraries=False, overflow_behavior="wrap")
         assert result == (AdvancedSeedGenerator.MIN_SEED_VALUE,)
         assert AdvancedSeedGenerator._last_seed == AdvancedSeedGenerator.MIN_SEED_VALUE
 
-    def test_decrement_underflow(self):
-        """Test decrement mode handles underflow correctly."""
+    def test_increment_overflow_clamp(self):
+        """Test increment mode handles overflow with clamp behavior."""
+        generator = AdvancedSeedGenerator()
+        
+        # Set to max value
+        AdvancedSeedGenerator._last_seed = AdvancedSeedGenerator.MAX_SEED_VALUE
+        
+        result = generator.generate_seed("increment", 0, sync_libraries=False, overflow_behavior="clamp")
+        assert result == (AdvancedSeedGenerator.MAX_SEED_VALUE,)
+        assert AdvancedSeedGenerator._last_seed == AdvancedSeedGenerator.MAX_SEED_VALUE
+
+    def test_increment_overflow_error(self):
+        """Test increment mode handles overflow with error behavior."""
+        generator = AdvancedSeedGenerator()
+        
+        # Set to max value
+        AdvancedSeedGenerator._last_seed = AdvancedSeedGenerator.MAX_SEED_VALUE
+        
+        # Should return fallback seed when error occurs (due to error handling)
+        result = generator.generate_seed("increment", 0, sync_libraries=False, overflow_behavior="error")
+        assert result == (AdvancedSeedGenerator.DEFAULT_SEED,)  # Fallback due to error
+
+    def test_decrement_underflow_wrap(self):
+        """Test decrement mode handles underflow with wrap behavior."""
         generator = AdvancedSeedGenerator()
         
         # Set to min value  
         AdvancedSeedGenerator._last_seed = AdvancedSeedGenerator.MIN_SEED_VALUE
         
-        result = generator.generate_seed("decrement", 0, sync_libraries=False)
+        result = generator.generate_seed("decrement", 0, sync_libraries=False, overflow_behavior="wrap")
         assert result == (AdvancedSeedGenerator.MAX_SEED_VALUE,)
         assert AdvancedSeedGenerator._last_seed == AdvancedSeedGenerator.MAX_SEED_VALUE
+
+    def test_decrement_underflow_clamp(self):
+        """Test decrement mode handles underflow with clamp behavior."""
+        generator = AdvancedSeedGenerator()
+        
+        # Set to min value  
+        AdvancedSeedGenerator._last_seed = AdvancedSeedGenerator.MIN_SEED_VALUE
+        
+        result = generator.generate_seed("decrement", 0, sync_libraries=False, overflow_behavior="clamp")
+        assert result == (AdvancedSeedGenerator.MIN_SEED_VALUE,)
+        assert AdvancedSeedGenerator._last_seed == AdvancedSeedGenerator.MIN_SEED_VALUE
+
+    def test_decrement_underflow_error(self):
+        """Test decrement mode handles underflow with error behavior."""
+        generator = AdvancedSeedGenerator()
+        
+        # Set to min value  
+        AdvancedSeedGenerator._last_seed = AdvancedSeedGenerator.MIN_SEED_VALUE
+        
+        # Should return fallback seed when error occurs (due to error handling)
+        result = generator.generate_seed("decrement", 0, sync_libraries=False, overflow_behavior="error")
+        assert result == (AdvancedSeedGenerator.DEFAULT_SEED,)  # Fallback due to error
 
     def test_input_validation(self):
         """Test input validation catches invalid inputs."""
@@ -160,6 +204,19 @@ class TestAdvancedSeedGenerator:
         # Test invalid seed type (should not crash due to fallback)
         result = generator.generate_seed("fixed", "not_a_number", sync_libraries=False)
         assert result == (AdvancedSeedGenerator.DEFAULT_SEED,)  # Fallback
+        
+        # Test invalid overflow behavior
+        result = generator.generate_seed("fixed", 42, sync_libraries=False, overflow_behavior="invalid")
+        assert result == (AdvancedSeedGenerator.DEFAULT_SEED,)  # Fallback
+
+    def test_overflow_behavior_validation(self):
+        """Test that overflow behavior options work correctly."""
+        generator = AdvancedSeedGenerator()
+        
+        # Test all valid overflow behaviors work for normal cases
+        for behavior in ["wrap", "clamp", "error"]:
+            result = generator.generate_seed("fixed", 42, sync_libraries=False, overflow_behavior=behavior)
+            assert result == (42,), f"Fixed mode failed with overflow_behavior='{behavior}'"
 
     def test_thread_safety(self):
         """Test thread safety of increment/decrement operations."""

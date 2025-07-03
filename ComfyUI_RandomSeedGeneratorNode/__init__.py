@@ -21,7 +21,7 @@ Usage:
     4. Configure synchronization and deterministic options as needed
 """
 
-__version__ = "2.1.0"
+__version__ = "2.2.0"
 __author__ = "Enhanced by Claude Code"
 
 from .random_seed_generator import AdvancedSeedGenerator, NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS

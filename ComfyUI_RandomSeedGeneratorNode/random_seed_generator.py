@@ -26,12 +26,13 @@ class AdvancedSeedGenerator:
     - increment: Increments the last generated seed by 1
     - decrement: Decrements the last generated seed by 1
 
-    Overflow Behavior:
-    When increment/decrement operations exceed valid bounds, wrap-around occurs:
-    - Increment overflow: MAX_SEED (2^64-1) -> MIN_SEED (0)
-    - Decrement underflow: MIN_SEED (0) -> MAX_SEED (2^64-1)
+    Overflow Behavior (Configurable):
+    Users can choose how increment/decrement operations handle boundary conditions:
+    - \"wrap\" (default): Cycle around bounds (MAX -> MIN, MIN -> MAX)
+    - \"clamp\": Stop at bounds (stay at MAX/MIN when limit reached)
+    - \"error\": Raise ValueError exception when overflow would occur
     
-    This ensures continuous operation without errors while maintaining predictable behavior.
+    This provides flexibility for different use cases while maintaining predictable behavior.
 
     Cross-Library Compatibility:
     - Python random: Full 64-bit seed support
@@ -98,6 +99,10 @@ class AdvancedSeedGenerator:
                 }),
                 "sync_libraries": ("BOOLEAN", {"default": True}),
                 "deterministic": ("BOOLEAN", {"default": False}),
+                "overflow_behavior": (["wrap", "clamp", "error"], {
+                    "default": "wrap",
+                    "tooltip": "How to handle overflow: wrap (cycle), clamp (stop at limits), error (raise exception)"
+                }),
             }
         }
 
@@ -106,7 +111,7 @@ class AdvancedSeedGenerator:
     FUNCTION = "generate_seed"
     CATEGORY = "utils/random"
 
-    def generate_seed(self, mode: str, seed: int, sync_libraries: bool = True, deterministic: bool = False) -> Tuple[int]:
+    def generate_seed(self, mode: str, seed: int, sync_libraries: bool = True, deterministic: bool = False, overflow_behavior: str = "wrap") -> Tuple[int]:
         """
         Generate a seed value based on the selected mode and apply it if requested.
 
@@ -115,24 +120,25 @@ class AdvancedSeedGenerator:
             seed (int): The user-defined seed (for 'fixed' mode).
             sync_libraries (bool): If True, synchronize the seed across Python, NumPy, and PyTorch.
             deterministic (bool): If True, enable full deterministic mode in PyTorch (may impact performance).
+            overflow_behavior (str): How to handle overflow - "wrap", "clamp", or "error".
 
         Returns:
             A tuple containing the generated integer seed.
             
         Raises:
-            ValueError: If mode is invalid or seed is out of bounds.
+            ValueError: If mode is invalid, seed is out of bounds, or overflow occurs with "error" behavior.
             RuntimeError: If seed generation or library synchronization fails.
         """
         logger = self._get_logger()
         
         try:
             # Validate inputs
-            self._validate_inputs(mode, seed, sync_libraries, deterministic)
+            self._validate_inputs(mode, seed, sync_libraries, deterministic, overflow_behavior)
             
             logger.debug(f"Generating seed with mode='{mode}', seed={seed}, sync={sync_libraries}, deterministic={deterministic}")
             
             # Generate seed based on mode
-            final_seed = self._generate_seed_by_mode(mode, seed)
+            final_seed = self._generate_seed_by_mode(mode, seed, overflow_behavior)
             
             # Validate and clamp final seed
             final_seed = self._validate_and_clamp_seed(final_seed)
@@ -160,9 +166,10 @@ class AdvancedSeedGenerator:
             logger.warning(f"Using fallback seed: {fallback_seed}")
             return (fallback_seed,)
     
-    def _validate_inputs(self, mode: str, seed: int, sync_libraries: bool, deterministic: bool) -> None:
+    def _validate_inputs(self, mode: str, seed: int, sync_libraries: bool, deterministic: bool, overflow_behavior: str) -> None:
         """Validate all input parameters."""
         valid_modes = ["fixed", "increment", "decrement", "random"]
+        valid_overflow_behaviors = ["wrap", "clamp", "error"]
         
         if not isinstance(mode, str) or mode not in valid_modes:
             raise ValueError(f"Invalid mode '{mode}'. Must be one of: {valid_modes}")
@@ -178,15 +185,18 @@ class AdvancedSeedGenerator:
         
         if not isinstance(deterministic, bool):
             raise ValueError(f"deterministic must be boolean, got {type(deterministic).__name__}")
+        
+        if not isinstance(overflow_behavior, str) or overflow_behavior not in valid_overflow_behaviors:
+            raise ValueError(f"Invalid overflow_behavior '{overflow_behavior}'. Must be one of: {valid_overflow_behaviors}")
     
-    def _generate_seed_by_mode(self, mode: str, seed: int) -> int:
+    def _generate_seed_by_mode(self, mode: str, seed: int, overflow_behavior: str = "wrap") -> int:
         """
         Generate seed value based on the specified mode.
         
-        Thread-safe generation with proper overflow handling.
-        For increment/decrement modes, overflow behavior wraps around:
-        - Increment overflow: MAX_SEED_VALUE -> MIN_SEED_VALUE 
-        - Decrement underflow: MIN_SEED_VALUE -> MAX_SEED_VALUE
+        Thread-safe generation with configurable overflow handling:
+        - "wrap": Cycle around bounds (MAX -> MIN, MIN -> MAX)
+        - "clamp": Stop at bounds (stay at MAX/MIN)
+        - "error": Raise exception on overflow
         """
         try:
             if mode == 'fixed':
@@ -197,26 +207,66 @@ class AdvancedSeedGenerator:
                 with self.__class__._lock:
                     current_seed = self.__class__._last_seed
                     new_seed = current_seed + 1
-                    if new_seed > self.MAX_SEED_VALUE:
-                        logger = self._get_logger()
-                        if logger.isEnabledFor(logging.DEBUG):
-                            logger.debug(f"Increment overflow: {current_seed} -> {self.MIN_SEED_VALUE} (wrapped)")
-                        return self.MIN_SEED_VALUE
-                    return new_seed
+                    return self._handle_overflow(new_seed, current_seed, "increment", overflow_behavior)
             elif mode == 'decrement':
                 with self.__class__._lock:
                     current_seed = self.__class__._last_seed
                     new_seed = current_seed - 1
-                    if new_seed < self.MIN_SEED_VALUE:
-                        logger = self._get_logger()
-                        if logger.isEnabledFor(logging.DEBUG):
-                            logger.debug(f"Decrement underflow: {current_seed} -> {self.MAX_SEED_VALUE} (wrapped)")
-                        return self.MAX_SEED_VALUE
-                    return new_seed
+                    return self._handle_overflow(new_seed, current_seed, "decrement", overflow_behavior)
             else:
                 raise ValueError(f"Unsupported mode: {mode}")
         except Exception as e:
             raise RuntimeError(f"Failed to generate seed for mode '{mode}': {str(e)}")
+    
+    def _handle_overflow(self, new_seed: int, current_seed: int, operation: str, overflow_behavior: str) -> int:
+        """
+        Handle overflow/underflow based on the specified behavior.
+        
+        Args:
+            new_seed (int): The calculated new seed value
+            current_seed (int): The current seed value
+            operation (str): "increment" or "decrement"
+            overflow_behavior (str): "wrap", "clamp", or "error"
+            
+        Returns:
+            int: The final seed value after overflow handling
+            
+        Raises:
+            ValueError: If overflow_behavior is "error" and overflow occurs
+        """
+        logger = self._get_logger()
+        
+        # Check for overflow conditions
+        if operation == "increment" and new_seed > self.MAX_SEED_VALUE:
+            if overflow_behavior == "wrap":
+                result = self.MIN_SEED_VALUE
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"Increment overflow: {current_seed} -> {result} (wrapped)")
+                return result
+            elif overflow_behavior == "clamp":
+                result = self.MAX_SEED_VALUE
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"Increment overflow: {current_seed} -> {result} (clamped)")
+                return result
+            elif overflow_behavior == "error":
+                raise ValueError(f"Increment overflow: seed {current_seed} + 1 exceeds maximum {self.MAX_SEED_VALUE}")
+                
+        elif operation == "decrement" and new_seed < self.MIN_SEED_VALUE:
+            if overflow_behavior == "wrap":
+                result = self.MAX_SEED_VALUE
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"Decrement underflow: {current_seed} -> {result} (wrapped)")
+                return result
+            elif overflow_behavior == "clamp":
+                result = self.MIN_SEED_VALUE
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"Decrement underflow: {current_seed} -> {result} (clamped)")
+                return result
+            elif overflow_behavior == "error":
+                raise ValueError(f"Decrement underflow: seed {current_seed} - 1 is below minimum {self.MIN_SEED_VALUE}")
+        
+        # No overflow occurred
+        return new_seed
     
     def _validate_and_clamp_seed(self, seed: int) -> int:
         """Validate and clamp seed to valid range."""
@@ -330,7 +380,7 @@ class AdvancedSeedGenerator:
         return errors
 
     @classmethod
-    def IS_CHANGED(cls, mode: str, seed: int, sync_libraries: bool, deterministic: bool) -> Union[float, str]:
+    def IS_CHANGED(cls, mode: str, seed: int, sync_libraries: bool, deterministic: bool, overflow_behavior: str = "wrap") -> Union[float, str]:
         """
         Force re-execution for modes that should produce a new result on each run.
         
@@ -341,6 +391,7 @@ class AdvancedSeedGenerator:
             seed (int): The seed value (unused for dynamic modes)
             sync_libraries (bool): Whether libraries are synchronized
             deterministic (bool): Whether deterministic mode is enabled
+            overflow_behavior (str): How to handle overflow (affects caching for increment/decrement)
             
         Returns:
             Union[float, str]: Unique value to force re-execution for dynamic modes,
@@ -356,8 +407,8 @@ class AdvancedSeedGenerator:
                     logger.debug(f"IS_CHANGED: {timestamp} for dynamic mode '{mode}'")
                 return timestamp
             else:
-                # For fixed mode, return a stable cache key
-                cache_key = f"fixed_{seed}_{sync_libraries}_{deterministic}"
+                # For fixed mode, return a stable cache key including overflow behavior
+                cache_key = f"fixed_{seed}_{sync_libraries}_{deterministic}_{overflow_behavior}"
                 logger = cls._get_logger()
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(f"IS_CHANGED: '{cache_key}' for static mode '{mode}'")
