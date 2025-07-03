@@ -2,9 +2,10 @@ import random
 import time
 import logging
 import os
+import threading
 import numpy as np
 import torch
-from typing import Tuple, Union, Optional
+from typing import Tuple, Union, Optional, Final
 
 class AdvancedSeedGenerator:
     """
@@ -17,14 +18,55 @@ class AdvancedSeedGenerator:
     - Optional deterministic mode for complete reproducibility on CUDA devices.
     - Comprehensive error handling and input validation.
     - Configurable logging for debugging and monitoring.
+    - Thread-safe operations for concurrent access.
+
+    Generation Modes:
+    - fixed: Returns the exact seed value provided by user
+    - random: Generates a new random seed (0 to 2^64-1) on each execution
+    - increment: Increments the last generated seed by 1
+    - decrement: Decrements the last generated seed by 1
+
+    Overflow Behavior:
+    When increment/decrement operations exceed valid bounds, wrap-around occurs:
+    - Increment overflow: MAX_SEED (2^64-1) -> MIN_SEED (0)
+    - Decrement underflow: MIN_SEED (0) -> MAX_SEED (2^64-1)
+    
+    This ensures continuous operation without errors while maintaining predictable behavior.
+
+    Cross-Library Compatibility:
+    - Python random: Full 64-bit seed support
+    - NumPy: Automatically truncates to 32-bit (logs when truncation occurs)
+    - PyTorch: Full 64-bit seed support  
+    - CUDA: Full 64-bit seed support when available
+
+    Thread Safety:
+    All state modifications are protected by threading.RLock() to ensure safe concurrent access.
+
+    Environment Variables:
+    - COMFYUI_SEED_LOG_LEVEL: Set logging level (DEBUG, INFO, WARNING, ERROR)
+
+    Examples:
+    >>> generator = AdvancedSeedGenerator()
+    >>> result = generator.generate_seed("fixed", 42)  # Returns (42,)
+    >>> result = generator.generate_seed("increment", 0)  # Returns (43,)
+    >>> result = generator.generate_seed("random", 0)  # Returns (random_value,)
     """
     _last_seed = 0  # Class-level variable to store state across executions
     _logger = None  # Class-level logger instance
+    _lock = threading.RLock()  # Thread-safe access to class state
     
-    # Constants for validation
-    MIN_SEED_VALUE = 0
-    MAX_SEED_VALUE = 0xffffffffffffffff
-    DEFAULT_SEED = 0
+    # Constants for validation - Using Final for immutability
+    MIN_SEED_VALUE: Final[int] = 0
+    # 64-bit maximum (18,446,744,073,709,551,615) chosen for:
+    # - Compatibility with modern diffusion models (Stable Diffusion, SDXL, etc.)
+    # - Full range support for PyTorch generators  
+    # - Maximum entropy for random number generation
+    # - Consistent with modern ML frameworks expecting 64-bit seeds
+    MAX_SEED_VALUE: Final[int] = 0xffffffffffffffff  
+    DEFAULT_SEED: Final[int] = 0
+    
+    # Configuration constants  
+    NUMPY_MAX_SEED: Final[int] = 2**32 - 1  # NumPy limited to 32-bit seeds (4,294,967,295)
     
     @classmethod
     def _get_logger(cls):
@@ -95,16 +137,20 @@ class AdvancedSeedGenerator:
             # Validate and clamp final seed
             final_seed = self._validate_and_clamp_seed(final_seed)
             
-            # Update class-level state
-            self.__class__._last_seed = final_seed
-            logger.debug(f"Updated _last_seed to {final_seed}")
+            # Update class-level state (thread-safe)
+            with self.__class__._lock:
+                self.__class__._last_seed = final_seed
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"Updated _last_seed to {final_seed}")
             
             # Apply seed synchronization if requested
             if sync_libraries:
                 self._apply_seed(final_seed, deterministic)
-                logger.debug(f"Applied seed {final_seed} to libraries")
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"Applied seed {final_seed} to libraries")
             
-            logger.info(f"Successfully generated seed: {final_seed} (mode: {mode})")
+            if logger.isEnabledFor(logging.INFO):
+                logger.info(f"Successfully generated seed: {final_seed} (mode: {mode})")
             return (final_seed,)
             
         except Exception as e:
@@ -134,24 +180,39 @@ class AdvancedSeedGenerator:
             raise ValueError(f"deterministic must be boolean, got {type(deterministic).__name__}")
     
     def _generate_seed_by_mode(self, mode: str, seed: int) -> int:
-        """Generate seed value based on the specified mode."""
+        """
+        Generate seed value based on the specified mode.
+        
+        Thread-safe generation with proper overflow handling.
+        For increment/decrement modes, overflow behavior wraps around:
+        - Increment overflow: MAX_SEED_VALUE -> MIN_SEED_VALUE 
+        - Decrement underflow: MIN_SEED_VALUE -> MAX_SEED_VALUE
+        """
         try:
             if mode == 'fixed':
                 return seed
             elif mode == 'random':
                 return random.randint(self.MIN_SEED_VALUE, self.MAX_SEED_VALUE)
             elif mode == 'increment':
-                new_seed = self.__class__._last_seed + 1
-                if new_seed > self.MAX_SEED_VALUE:
-                    self._get_logger().warning(f"Increment overflow, wrapping to {self.MIN_SEED_VALUE}")
-                    return self.MIN_SEED_VALUE
-                return new_seed
+                with self.__class__._lock:
+                    current_seed = self.__class__._last_seed
+                    new_seed = current_seed + 1
+                    if new_seed > self.MAX_SEED_VALUE:
+                        logger = self._get_logger()
+                        if logger.isEnabledFor(logging.DEBUG):
+                            logger.debug(f"Increment overflow: {current_seed} -> {self.MIN_SEED_VALUE} (wrapped)")
+                        return self.MIN_SEED_VALUE
+                    return new_seed
             elif mode == 'decrement':
-                new_seed = self.__class__._last_seed - 1
-                if new_seed < self.MIN_SEED_VALUE:
-                    self._get_logger().warning(f"Decrement underflow, wrapping to {self.MAX_SEED_VALUE}")
-                    return self.MAX_SEED_VALUE
-                return new_seed
+                with self.__class__._lock:
+                    current_seed = self.__class__._last_seed
+                    new_seed = current_seed - 1
+                    if new_seed < self.MIN_SEED_VALUE:
+                        logger = self._get_logger()
+                        if logger.isEnabledFor(logging.DEBUG):
+                            logger.debug(f"Decrement underflow: {current_seed} -> {self.MAX_SEED_VALUE} (wrapped)")
+                        return self.MAX_SEED_VALUE
+                    return new_seed
             else:
                 raise ValueError(f"Unsupported mode: {mode}")
         except Exception as e:
@@ -184,68 +245,96 @@ class AdvancedSeedGenerator:
         logger = self._get_logger()
         errors = []
         
-        # Apply Python random seed
-        try:
-            random.seed(seed_value)
-            logger.debug("Applied seed to Python random module")
-        except Exception as e:
-            error_msg = f"Failed to set Python random seed: {str(e)}"
-            logger.error(error_msg)
-            errors.append(error_msg)
-        
-        # Apply NumPy seed
-        try:
-            # Handle potential overflow for NumPy (uses 32-bit seeds)
-            numpy_seed = seed_value % (2**32)
-            np.random.seed(numpy_seed)
-            if numpy_seed != seed_value:
-                logger.warning(f"NumPy seed truncated from {seed_value} to {numpy_seed}")
-            logger.debug("Applied seed to NumPy random")
-        except Exception as e:
-            error_msg = f"Failed to set NumPy random seed: {str(e)}"
-            logger.error(error_msg)
-            errors.append(error_msg)
-        
-        # Apply PyTorch seed
-        try:
-            torch.manual_seed(seed_value)
-            logger.debug("Applied seed to PyTorch")
-        except Exception as e:
-            error_msg = f"Failed to set PyTorch seed: {str(e)}"
-            logger.error(error_msg)
-            errors.append(error_msg)
-        
-        # Apply CUDA seeds and configure deterministic mode
-        if torch.cuda.is_available():
-            try:
-                torch.cuda.manual_seed_all(seed_value)
-                logger.debug("Applied seed to CUDA")
-            except Exception as e:
-                error_msg = f"Failed to set CUDA seed: {str(e)}"
-                logger.error(error_msg)
-                errors.append(error_msg)
-            
-            try:
-                torch.backends.cudnn.deterministic = deterministic
-                torch.backends.cudnn.benchmark = not deterministic
-                logger.debug(f"Set CUDNN deterministic={deterministic}, benchmark={not deterministic}")
-            except Exception as e:
-                error_msg = f"Failed to configure CUDNN: {str(e)}"
-                logger.error(error_msg)
-                errors.append(error_msg)
-        else:
-            logger.debug("CUDA not available, skipping CUDA seed configuration")
+        # Apply seeds to all available libraries
+        errors.extend(self._apply_python_seed(seed_value, logger))
+        errors.extend(self._apply_numpy_seed(seed_value, logger))
+        errors.extend(self._apply_pytorch_seed(seed_value, logger))
+        errors.extend(self._apply_cuda_seeds(seed_value, deterministic, logger))
         
         # Report any errors but don't fail completely
         if errors:
             logger.warning(f"Seed application completed with {len(errors)} errors: {'; '.join(errors)}")
-        else:
+        elif logger.isEnabledFor(logging.DEBUG):
             logger.debug("Successfully applied seed to all available libraries")
+    
+    def _apply_python_seed(self, seed_value: int, logger: logging.Logger) -> list:
+        """Apply seed to Python's random module."""
+        try:
+            random.seed(seed_value)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("Applied seed to Python random module")
+            return []
+        except Exception as e:
+            error_msg = f"Failed to set Python random seed: {str(e)}"
+            logger.error(error_msg)
+            return [error_msg]
+    
+    def _apply_numpy_seed(self, seed_value: int, logger: logging.Logger) -> list:
+        """Apply seed to NumPy's random module with 32-bit truncation."""
+        try:
+            # Handle potential overflow for NumPy (uses 32-bit seeds)
+            numpy_seed = seed_value % self.NUMPY_MAX_SEED
+            np.random.seed(numpy_seed)
+            if numpy_seed != seed_value and logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"NumPy seed truncated from {seed_value} to {numpy_seed}")
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("Applied seed to NumPy random")
+            return []
+        except Exception as e:
+            error_msg = f"Failed to set NumPy random seed: {str(e)}"
+            logger.error(error_msg)
+            return [error_msg]
+    
+    def _apply_pytorch_seed(self, seed_value: int, logger: logging.Logger) -> list:
+        """Apply seed to PyTorch."""
+        try:
+            torch.manual_seed(seed_value)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("Applied seed to PyTorch")
+            return []
+        except Exception as e:
+            error_msg = f"Failed to set PyTorch seed: {str(e)}"
+            logger.error(error_msg)
+            return [error_msg]
+    
+    def _apply_cuda_seeds(self, seed_value: int, deterministic: bool, logger: logging.Logger) -> list:
+        """Apply CUDA seeds and configure deterministic mode."""
+        errors = []
+        
+        if not torch.cuda.is_available():
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("CUDA not available, skipping CUDA seed configuration")
+            return errors
+        
+        # Apply CUDA seed
+        try:
+            torch.cuda.manual_seed_all(seed_value)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("Applied seed to CUDA")
+        except Exception as e:
+            error_msg = f"Failed to set CUDA seed: {str(e)}"
+            logger.error(error_msg)
+            errors.append(error_msg)
+        
+        # Configure CUDNN deterministic mode
+        try:
+            torch.backends.cudnn.deterministic = deterministic
+            torch.backends.cudnn.benchmark = not deterministic
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"Set CUDNN deterministic={deterministic}, benchmark={not deterministic}")
+        except Exception as e:
+            error_msg = f"Failed to configure CUDNN: {str(e)}"
+            logger.error(error_msg)
+            errors.append(error_msg)
+        
+        return errors
 
     @classmethod
     def IS_CHANGED(cls, mode: str, seed: int, sync_libraries: bool, deterministic: bool) -> Union[float, str]:
         """
         Force re-execution for modes that should produce a new result on each run.
+        
+        Optimized for performance - minimal logging overhead.
         
         Args:
             mode (str): The seed generation mode
@@ -258,37 +347,48 @@ class AdvancedSeedGenerator:
                              or constant for static modes
         """
         try:
+            # Dynamic modes always need re-execution
             if mode in ["random", "increment", "decrement"]:
-                # Return unique timestamp to force re-execution
                 timestamp = time.time()
-                cls._get_logger().debug(f"IS_CHANGED returning {timestamp} for dynamic mode '{mode}'")
+                # Only log if debug is explicitly enabled to avoid performance overhead
+                logger = cls._get_logger()
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"IS_CHANGED: {timestamp} for dynamic mode '{mode}'")
                 return timestamp
             else:
-                # For fixed mode, return a constant to allow caching
+                # For fixed mode, return a stable cache key
                 cache_key = f"fixed_{seed}_{sync_libraries}_{deterministic}"
-                cls._get_logger().debug(f"IS_CHANGED returning '{cache_key}' for static mode '{mode}'")
+                logger = cls._get_logger()
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"IS_CHANGED: '{cache_key}' for static mode '{mode}'")
                 return cache_key
         except Exception as e:
-            cls._get_logger().error(f"Error in IS_CHANGED: {str(e)}")
+            # Minimal error handling - don't call logger to avoid recursion
+            print(f"[AdvancedSeedGenerator] Error in IS_CHANGED: {e}")
             # Fallback to timestamp to ensure execution
             return time.time()
     
     @classmethod
     def reset_state(cls) -> None:
         """Reset the class-level state. Useful for testing or reinitialization."""
-        cls._last_seed = cls.DEFAULT_SEED
-        if cls._logger:
+        with cls._lock:
+            cls._last_seed = cls.DEFAULT_SEED
+        if cls._logger and cls._logger.isEnabledFor(logging.INFO):
             cls._logger.info("Reset AdvancedSeedGenerator state")
     
     @classmethod
     def get_state_info(cls) -> dict:
         """Get current state information for debugging."""
+        with cls._lock:
+            current_seed = cls._last_seed
         return {
-            "last_seed": cls._last_seed,
+            "last_seed": current_seed,
             "min_seed": cls.MIN_SEED_VALUE,
             "max_seed": cls.MAX_SEED_VALUE,
             "default_seed": cls.DEFAULT_SEED,
-            "logger_level": cls._logger.level if cls._logger else "Not initialized"
+            "numpy_max_seed": cls.NUMPY_MAX_SEED,
+            "logger_level": cls._logger.level if cls._logger else "Not initialized",
+            "thread_safe": True
         }
 
 # ComfyUI Registration
