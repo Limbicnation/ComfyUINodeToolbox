@@ -1,4 +1,4 @@
-# ComfyUINodeToolbox
+# ComfyUINodeToolbox 🧰🔗
 
 ComfyUINodeToolbox is a tool designed to streamline and enhance your workflow operations.
 
