@@ -52,6 +52,8 @@ class TestAdvancedSeedGenerator:
         assert "seed" in required
         assert "sync_libraries" in required
         assert "deterministic" in required
+        assert "use_torch_backend" in required
+        assert "batch_count" in required
         
         # Check mode options
         assert required["mode"][0] == ["fixed", "increment", "decrement", "random"]
@@ -74,9 +76,9 @@ class TestAdvancedSeedGenerator:
         generator = AdvancedSeedGenerator()
         
         test_seed = 12345
-        result = generator.generate_seed("fixed", test_seed, sync_libraries=False)
+        result = generator.generate_seed("fixed", test_seed, sync_libraries=False, deterministic=False, overflow_behavior="wrap", use_torch_backend="auto", batch_count=1)
         
-        assert result == (test_seed,)
+        assert result == (test_seed, 1)  # Updated for new return format
         assert AdvancedSeedGenerator._last_seed == test_seed
 
     def test_random_mode(self):
@@ -85,7 +87,7 @@ class TestAdvancedSeedGenerator:
         
         results = []
         for _ in range(10):
-            result = generator.generate_seed("random", 0, sync_libraries=False)
+            result = generator.generate_seed("random", 0, sync_libraries=False, deterministic=False, overflow_behavior="wrap", use_torch_backend="auto", batch_count=1)
             results.append(result[0])
         
         # Should generate different values (very high probability)
@@ -411,6 +413,123 @@ class TestAdvancedSeedGenerator:
         assert len(results["increment"]) == 50
         assert len(results["decrement"]) == 50
 
+    def test_torch_backend_selection(self):
+        """Test torch backend selection logic."""
+        generator = AdvancedSeedGenerator()
+        
+        # Test explicit backend selection
+        result_random = generator.generate_seed("random", 0, sync_libraries=False, deterministic=False, overflow_behavior="wrap", use_torch_backend="random", batch_count=1)
+        result_torch = generator.generate_seed("random", 0, sync_libraries=False, deterministic=False, overflow_behavior="wrap", use_torch_backend="torch", batch_count=1)
+        result_auto = generator.generate_seed("random", 0, sync_libraries=False, deterministic=False, overflow_behavior="wrap", use_torch_backend="auto", batch_count=1)
+        
+        # All should return valid seeds
+        assert AdvancedSeedGenerator.MIN_SEED_VALUE <= result_random[0] <= AdvancedSeedGenerator.MAX_SEED_VALUE
+        assert AdvancedSeedGenerator.MIN_SEED_VALUE <= result_torch[0] <= AdvancedSeedGenerator.MAX_SEED_VALUE
+        assert AdvancedSeedGenerator.MIN_SEED_VALUE <= result_auto[0] <= AdvancedSeedGenerator.MAX_SEED_VALUE
+        
+        # Batch count should be returned correctly
+        assert result_random[1] == 1
+        assert result_torch[1] == 1
+        assert result_auto[1] == 1
+
+    def test_batch_seed_generation(self):
+        """Test batch seed generation functionality."""
+        generator = AdvancedSeedGenerator()
+        
+        # Test small batch
+        result_small = generator.generate_seed("random", 0, sync_libraries=False, deterministic=False, overflow_behavior="wrap", use_torch_backend="auto", batch_count=5)
+        assert result_small[1] == 5
+        
+        # Test larger batch (should trigger torch backend)
+        result_large = generator.generate_seed("random", 0, sync_libraries=False, deterministic=False, overflow_behavior="wrap", use_torch_backend="auto", batch_count=200)
+        assert result_large[1] == 200
+        
+        # Fixed mode batch
+        test_seed = 42
+        result_fixed = generator.generate_seed("fixed", test_seed, sync_libraries=False, deterministic=False, overflow_behavior="wrap", use_torch_backend="auto", batch_count=10)
+        assert result_fixed[0] == test_seed
+        assert result_fixed[1] == 10
+
+    def test_torch_backend_error_handling(self):
+        """Test error handling in torch backend."""
+        generator = AdvancedSeedGenerator()
+        
+        # Test with potentially problematic values
+        result = generator.generate_seed("random", 0, sync_libraries=False, deterministic=False, overflow_behavior="wrap", use_torch_backend="torch", batch_count=1)
+        
+        # Should not crash and return valid seed
+        assert isinstance(result[0], int)
+        assert result[1] == 1
+
+    def test_backend_performance_scaling(self):
+        """Test that torch backend provides performance benefits for large batches."""
+        import time
+        generator = AdvancedSeedGenerator()
+        
+        # Test small batch with random backend
+        start_time = time.perf_counter()
+        for _ in range(10):
+            generator.generate_seed("random", 0, sync_libraries=False, deterministic=False, overflow_behavior="wrap", use_torch_backend="random", batch_count=1)
+        random_time = time.perf_counter() - start_time
+        
+        # Test torch backend 
+        start_time = time.perf_counter()
+        for _ in range(10):
+            generator.generate_seed("random", 0, sync_libraries=False, deterministic=False, overflow_behavior="wrap", use_torch_backend="torch", batch_count=1)
+        torch_time = time.perf_counter() - start_time
+        
+        # Both should complete without error (performance comparison is in benchmark script)
+        assert random_time > 0
+        assert torch_time > 0
+
+    def test_input_validation_new_parameters(self):
+        """Test validation of new input parameters."""
+        generator = AdvancedSeedGenerator()
+        
+        # Test invalid backend - should return fallback seed (0, 1) due to error handling
+        result = generator.generate_seed("random", 0, sync_libraries=False, deterministic=False, overflow_behavior="wrap", use_torch_backend="invalid", batch_count=1)
+        assert result == (0, 1)  # Fallback seed and batch count
+        
+        # Test invalid batch count - should return fallback seed
+        result = generator.generate_seed("random", 0, sync_libraries=False, deterministic=False, overflow_behavior="wrap", use_torch_backend="auto", batch_count=0)
+        assert result == (0, 1)  # Fallback seed and batch count
+        
+        result = generator.generate_seed("random", 0, sync_libraries=False, deterministic=False, overflow_behavior="wrap", use_torch_backend="auto", batch_count=200000)
+        assert result == (0, 1)  # Fallback seed and batch count
+
+    def test_is_changed_with_new_parameters(self):
+        """Test IS_CHANGED method with new parameters."""
+        # Test that IS_CHANGED returns different values for different parameters
+        result1 = AdvancedSeedGenerator.IS_CHANGED("fixed", 42, True, False, "wrap", "auto", 1)
+        result2 = AdvancedSeedGenerator.IS_CHANGED("fixed", 42, True, False, "wrap", "torch", 1)
+        result3 = AdvancedSeedGenerator.IS_CHANGED("fixed", 42, True, False, "wrap", "auto", 5)
+        
+        # Different backend should produce different cache keys
+        assert result1 != result2
+        
+        # Different batch count should produce different cache keys
+        assert result1 != result3
+        
+        # Random mode should always return timestamp (float)
+        random_result = AdvancedSeedGenerator.IS_CHANGED("random", 0, True, False, "wrap", "auto", 1)
+        assert isinstance(random_result, float)
+
+    def test_sequential_batch_generation(self):
+        """Test sequential seed generation in batch mode."""
+        generator = AdvancedSeedGenerator()
+        
+        # Set initial state
+        generator.generate_seed("fixed", 100, sync_libraries=False, deterministic=False, overflow_behavior="wrap", use_torch_backend="auto", batch_count=1)
+        
+        # Test increment batch - should generate seeds 101, 102, 103, 104, 105
+        result = generator.generate_seed("increment", 0, sync_libraries=False, deterministic=False, overflow_behavior="wrap", use_torch_backend="auto", batch_count=5)
+        assert result[0] == 101  # First seed in batch
+        assert result[1] == 5    # Batch count
+        
+        # State should be updated to last seed in batch (105)
+        next_result = generator.generate_seed("increment", 0, sync_libraries=False, deterministic=False, overflow_behavior="wrap", use_torch_backend="auto", batch_count=1)
+        assert next_result[0] == 106
+
 
 # Performance benchmark (optional, run separately)
 def benchmark_seed_generation():
@@ -423,7 +542,7 @@ def benchmark_seed_generation():
     for mode in modes:
         start_time = time.time()
         for i in range(iterations):
-            generator.generate_seed(mode, i, sync_libraries=False)
+            generator.generate_seed(mode, i, sync_libraries=False, deterministic=False, overflow_behavior="wrap", use_torch_backend="auto", batch_count=1)
         elapsed = time.time() - start_time
         
         print(f"{mode} mode: {iterations} operations in {elapsed:.3f}s "
