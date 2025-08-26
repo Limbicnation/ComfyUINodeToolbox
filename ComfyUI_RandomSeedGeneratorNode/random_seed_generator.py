@@ -68,6 +68,12 @@ class AdvancedSeedGenerator:
     
     # Configuration constants  
     NUMPY_MAX_SEED: Final[int] = 2**32 - 1  # NumPy limited to 32-bit seeds (4,294,967,295)
+    MAX_BATCH_COUNT: Final[int] = 100000  # Maximum number of seeds that can be generated in batch mode
+    
+    # Backend selection thresholds for optimal performance
+    TORCH_CUDA_BATCH_THRESHOLD: Final[int] = 1000  # Use GPU acceleration for batches >= 1000
+    TORCH_CPU_BATCH_THRESHOLD: Final[int] = 100    # Use torch CPU for batches >= 100
+    TORCH_BATCH_MIN_THRESHOLD: Final[int] = 10     # Minimum batch size to consider torch backend
     
     @classmethod
     def _get_logger(cls):
@@ -110,7 +116,7 @@ class AdvancedSeedGenerator:
                 "batch_count": ("INT", {
                     "default": 1,
                     "min": 1,
-                    "max": 100000,
+                    "max": 100000,  # Using literal value in INPUT_TYPES as class constants not accessible in classmethod
                     "step": 1,
                     "tooltip": "Number of seeds to generate (batch mode)"
                 }),
@@ -163,10 +169,15 @@ class AdvancedSeedGenerator:
             final_seed = self._validate_and_clamp_seed(final_seed)
             
             # Update class-level state (thread-safe)
-            with self.__class__._lock:
-                self.__class__._last_seed = final_seed
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(f"Updated _last_seed to {final_seed}")
+            # Skip state update for batch increment/decrement as _generate_sequential_seed_batch already handled it
+            if not (batch_count > 1 and mode in ['increment', 'decrement']):
+                with self.__class__._lock:
+                    self.__class__._last_seed = final_seed
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"Updated _last_seed to {final_seed}")
+            else:
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"Skipped _last_seed update for batch {mode} mode (already handled by batch generator)")
             
             # Apply seed synchronization if requested
             if sync_libraries:
@@ -212,8 +223,8 @@ class AdvancedSeedGenerator:
         if not isinstance(use_torch_backend, str) or use_torch_backend not in valid_backends:
             raise ValueError(f"Invalid use_torch_backend '{use_torch_backend}'. Must be one of: {valid_backends}")
         
-        if not isinstance(batch_count, int) or batch_count < 1 or batch_count > 100000:
-            raise ValueError(f"batch_count must be an integer between 1 and 100000, got {batch_count}")
+        if not isinstance(batch_count, int) or batch_count < 1 or batch_count > self.MAX_BATCH_COUNT:
+            raise ValueError(f"batch_count must be an integer between 1 and {self.MAX_BATCH_COUNT}, got {batch_count}")
     
     def _generate_seed_by_mode(self, mode: str, seed: int, overflow_behavior: str = "wrap", use_torch_backend: str = "auto") -> int:
         """
@@ -333,12 +344,12 @@ class AdvancedSeedGenerator:
         logger = self._get_logger()
         
         try:
-            if backend == "torch" and batch_count >= 10:
+            if backend == "torch" and batch_count >= self.TORCH_BATCH_MIN_THRESHOLD:
                 # Use torch for efficient batch generation
                 with torch.no_grad():
                     # Use CPU to avoid GPU memory overhead for small batches
                     device = 'cpu'
-                    if batch_count >= 1000 and torch.cuda.is_available():
+                    if batch_count >= self.TORCH_CUDA_BATCH_THRESHOLD and torch.cuda.is_available():
                         device = 'cuda'
                     
                     # Use randint with safe range for batch generation
@@ -414,9 +425,9 @@ class AdvancedSeedGenerator:
             return "torch"
         else:  # "auto"
             # Auto-select based on batch size and PyTorch availability
-            if batch_size >= 1000 and torch.cuda.is_available():
+            if batch_size >= self.TORCH_CUDA_BATCH_THRESHOLD and torch.cuda.is_available():
                 return "torch"
-            elif batch_size >= 100:  # Large batches benefit from torch even on CPU
+            elif batch_size >= self.TORCH_CPU_BATCH_THRESHOLD:  # Large batches benefit from torch even on CPU
                 return "torch"
             else:
                 return "random"
