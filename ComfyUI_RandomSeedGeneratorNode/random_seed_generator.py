@@ -5,7 +5,7 @@ import os
 import threading
 import numpy as np
 import torch
-from typing import Tuple, Union, Optional, Final
+from typing import Tuple, Union, Optional, Final, List
 
 class AdvancedSeedGenerator:
     """
@@ -103,17 +103,28 @@ class AdvancedSeedGenerator:
                     "default": "wrap",
                     "tooltip": "How to handle overflow: wrap (cycle), clamp (stop at limits), error (raise exception)"
                 }),
+                "use_torch_backend": (["auto", "random", "torch"], {
+                    "default": "auto",
+                    "tooltip": "Random backend: auto (optimal), random (Python), torch (PyTorch)"
+                }),
+                "batch_count": ("INT", {
+                    "default": 1,
+                    "min": 1,
+                    "max": 100000,
+                    "step": 1,
+                    "tooltip": "Number of seeds to generate (batch mode)"
+                }),
             }
         }
 
-    RETURN_TYPES = ("INT",)
-    RETURN_NAMES = ("seed",)
+    RETURN_TYPES = ("INT", "INT")
+    RETURN_NAMES = ("seed", "batch_count")
     FUNCTION = "generate_seed"
-    CATEGORY = "utils/random"
+    CATEGORY = "utils"
 
-    def generate_seed(self, mode: str, seed: int, sync_libraries: bool = True, deterministic: bool = False, overflow_behavior: str = "wrap") -> Tuple[int]:
+    def generate_seed(self, mode: str, seed: int, sync_libraries: bool = True, deterministic: bool = False, overflow_behavior: str = "wrap", use_torch_backend: str = "auto", batch_count: int = 1) -> Tuple[int, int]:
         """
-        Generate a seed value based on the selected mode and apply it if requested.
+        Generate seed value(s) based on the selected mode and apply them if requested.
 
         Args:
             mode (str): The seed generation mode.
@@ -121,9 +132,11 @@ class AdvancedSeedGenerator:
             sync_libraries (bool): If True, synchronize the seed across Python, NumPy, and PyTorch.
             deterministic (bool): If True, enable full deterministic mode in PyTorch (may impact performance).
             overflow_behavior (str): How to handle overflow - "wrap", "clamp", or "error".
+            use_torch_backend (str): Backend selection - "auto", "random", or "torch".
+            batch_count (int): Number of seeds to generate (batch mode).
 
         Returns:
-            A tuple containing the generated integer seed.
+            A tuple containing the generated integer seed and batch count.
             
         Raises:
             ValueError: If mode is invalid, seed is out of bounds, or overflow occurs with "error" behavior.
@@ -133,12 +146,18 @@ class AdvancedSeedGenerator:
         
         try:
             # Validate inputs
-            self._validate_inputs(mode, seed, sync_libraries, deterministic, overflow_behavior)
+            self._validate_inputs(mode, seed, sync_libraries, deterministic, overflow_behavior, use_torch_backend, batch_count)
             
-            logger.debug(f"Generating seed with mode='{mode}', seed={seed}, sync={sync_libraries}, deterministic={deterministic}")
+            logger.debug(f"Generating seed with mode='{mode}', seed={seed}, sync={sync_libraries}, deterministic={deterministic}, backend='{use_torch_backend}', batch={batch_count}")
             
-            # Generate seed based on mode
-            final_seed = self._generate_seed_by_mode(mode, seed, overflow_behavior)
+            # Generate seed(s) based on mode and backend
+            if batch_count == 1:
+                final_seed = self._generate_seed_by_mode(mode, seed, overflow_behavior, use_torch_backend)
+            else:
+                # Batch mode - always returns the first seed for compatibility
+                seeds = self._generate_seed_batch(mode, seed, batch_count, overflow_behavior, use_torch_backend)
+                final_seed = seeds[0] if seeds else self.DEFAULT_SEED
+                logger.info(f"Generated {len(seeds)} seeds in batch mode, using first seed: {final_seed}")
             
             # Validate and clamp final seed
             final_seed = self._validate_and_clamp_seed(final_seed)
@@ -157,19 +176,20 @@ class AdvancedSeedGenerator:
             
             if logger.isEnabledFor(logging.INFO):
                 logger.info(f"Successfully generated seed: {final_seed} (mode: {mode})")
-            return (final_seed,)
+            return (final_seed, batch_count)
             
         except Exception as e:
             logger.error(f"Failed to generate seed: {str(e)}")
             # Return fallback seed to prevent complete failure
             fallback_seed = self.DEFAULT_SEED
             logger.warning(f"Using fallback seed: {fallback_seed}")
-            return (fallback_seed,)
+            return (fallback_seed, 1)
     
-    def _validate_inputs(self, mode: str, seed: int, sync_libraries: bool, deterministic: bool, overflow_behavior: str) -> None:
+    def _validate_inputs(self, mode: str, seed: int, sync_libraries: bool, deterministic: bool, overflow_behavior: str, use_torch_backend: str, batch_count: int) -> None:
         """Validate all input parameters."""
         valid_modes = ["fixed", "increment", "decrement", "random"]
         valid_overflow_behaviors = ["wrap", "clamp", "error"]
+        valid_backends = ["auto", "random", "torch"]
         
         if not isinstance(mode, str) or mode not in valid_modes:
             raise ValueError(f"Invalid mode '{mode}'. Must be one of: {valid_modes}")
@@ -188,21 +208,32 @@ class AdvancedSeedGenerator:
         
         if not isinstance(overflow_behavior, str) or overflow_behavior not in valid_overflow_behaviors:
             raise ValueError(f"Invalid overflow_behavior '{overflow_behavior}'. Must be one of: {valid_overflow_behaviors}")
+        
+        if not isinstance(use_torch_backend, str) or use_torch_backend not in valid_backends:
+            raise ValueError(f"Invalid use_torch_backend '{use_torch_backend}'. Must be one of: {valid_backends}")
+        
+        if not isinstance(batch_count, int) or batch_count < 1 or batch_count > 100000:
+            raise ValueError(f"batch_count must be an integer between 1 and 100000, got {batch_count}")
     
-    def _generate_seed_by_mode(self, mode: str, seed: int, overflow_behavior: str = "wrap") -> int:
+    def _generate_seed_by_mode(self, mode: str, seed: int, overflow_behavior: str = "wrap", use_torch_backend: str = "auto") -> int:
         """
-        Generate seed value based on the specified mode.
+        Generate seed value based on the specified mode and backend.
         
         Thread-safe generation with configurable overflow handling:
         - "wrap": Cycle around bounds (MAX -> MIN, MIN -> MAX)
         - "clamp": Stop at bounds (stay at MAX/MIN)
         - "error": Raise exception on overflow
+        
+        Backend selection:
+        - "auto": Use optimal backend (random for single seeds, torch for batches)
+        - "random": Force Python random module
+        - "torch": Force PyTorch backend
         """
         try:
             if mode == 'fixed':
                 return seed
             elif mode == 'random':
-                return random.randint(self.MIN_SEED_VALUE, self.MAX_SEED_VALUE)
+                return self._generate_random_seed(use_torch_backend)
             elif mode == 'increment':
                 with self.__class__._lock:
                     current_seed = self.__class__._last_seed
@@ -217,6 +248,178 @@ class AdvancedSeedGenerator:
                 raise ValueError(f"Unsupported mode: {mode}")
         except Exception as e:
             raise RuntimeError(f"Failed to generate seed for mode '{mode}': {str(e)}")
+    
+    def _generate_random_seed(self, use_torch_backend: str = "auto") -> int:
+        """
+        Generate a single random seed using the specified backend.
+        
+        Args:
+            use_torch_backend (str): Backend preference - "auto", "random", or "torch"
+            
+        Returns:
+            int: Random seed value in valid range
+        """
+        backend = self._select_optimal_backend(use_torch_backend, batch_size=1)
+        logger = self._get_logger()
+        
+        try:
+            if backend == "torch":
+                # Use torch.randint for direct integer generation (more stable)
+                with torch.no_grad():
+                    # Use randint with safe range (PyTorch has limitations with very large ranges)
+                    # Use 48-bit range for better compatibility while maintaining good entropy
+                    torch_max = min(self.MAX_SEED_VALUE, 2**48 - 1)
+                    seed_tensor = torch.randint(
+                        low=self.MIN_SEED_VALUE, 
+                        high=torch_max + 1, 
+                        size=(1,), 
+                        dtype=torch.int64,
+                        device='cpu'
+                    )
+                    return int(seed_tensor.item())
+            else:
+                # Use Python random (default, most efficient for single values)
+                return random.randint(self.MIN_SEED_VALUE, self.MAX_SEED_VALUE)
+                
+        except Exception as e:
+            logger.warning(f"Failed to generate random seed with {backend} backend: {str(e)}")
+            # Fallback to Python random
+            return random.randint(self.MIN_SEED_VALUE, self.MAX_SEED_VALUE)
+    
+    def _generate_seed_batch(self, mode: str, seed: int, batch_count: int, overflow_behavior: str = "wrap", use_torch_backend: str = "auto") -> List[int]:
+        """
+        Generate multiple seeds efficiently using batch operations.
+        
+        Args:
+            mode (str): The seed generation mode
+            seed (int): Base seed value (for fixed mode)
+            batch_count (int): Number of seeds to generate
+            overflow_behavior (str): How to handle overflow
+            use_torch_backend (str): Backend preference
+            
+        Returns:
+            List[int]: List of generated seed values
+        """
+        logger = self._get_logger()
+        
+        try:
+            if mode == 'fixed':
+                return [seed] * batch_count
+            elif mode == 'random':
+                return self._generate_random_seed_batch(batch_count, use_torch_backend)
+            elif mode in ['increment', 'decrement']:
+                return self._generate_sequential_seed_batch(mode, batch_count, overflow_behavior)
+            else:
+                raise ValueError(f"Unsupported mode for batch generation: {mode}")
+                
+        except Exception as e:
+            logger.error(f"Failed to generate seed batch: {str(e)}")
+            # Fallback to single seed repeated
+            fallback_seed = self._generate_seed_by_mode('fixed', self.DEFAULT_SEED, overflow_behavior, use_torch_backend)
+            return [fallback_seed] * batch_count
+    
+    def _generate_random_seed_batch(self, batch_count: int, use_torch_backend: str = "auto") -> List[int]:
+        """
+        Generate multiple random seeds efficiently.
+        
+        Args:
+            batch_count (int): Number of seeds to generate
+            use_torch_backend (str): Backend preference
+            
+        Returns:
+            List[int]: List of random seed values
+        """
+        backend = self._select_optimal_backend(use_torch_backend, batch_size=batch_count)
+        logger = self._get_logger()
+        
+        try:
+            if backend == "torch" and batch_count >= 10:
+                # Use torch for efficient batch generation
+                with torch.no_grad():
+                    # Use CPU to avoid GPU memory overhead for small batches
+                    device = 'cpu'
+                    if batch_count >= 1000 and torch.cuda.is_available():
+                        device = 'cuda'
+                    
+                    # Use randint with safe range for batch generation
+                    torch_max = min(self.MAX_SEED_VALUE, 2**48 - 1)
+                    seed_vals = torch.randint(
+                        low=self.MIN_SEED_VALUE,
+                        high=torch_max + 1,
+                        size=(batch_count,),
+                        dtype=torch.int64,
+                        device=device
+                    )
+                    
+                    if device == 'cuda':
+                        seed_vals = seed_vals.cpu()
+                    
+                    return seed_vals.tolist()
+            else:
+                # Use Python random for smaller batches or forced random backend
+                return [random.randint(self.MIN_SEED_VALUE, self.MAX_SEED_VALUE) for _ in range(batch_count)]
+                
+        except Exception as e:
+            logger.warning(f"Failed to generate batch with {backend} backend: {str(e)}")
+            # Fallback to Python random
+            return [random.randint(self.MIN_SEED_VALUE, self.MAX_SEED_VALUE) for _ in range(batch_count)]
+    
+    def _generate_sequential_seed_batch(self, mode: str, batch_count: int, overflow_behavior: str) -> List[int]:
+        """
+        Generate sequential seeds (increment/decrement) in batch.
+        
+        Args:
+            mode (str): "increment" or "decrement"
+            batch_count (int): Number of seeds to generate
+            overflow_behavior (str): How to handle overflow
+            
+        Returns:
+            List[int]: List of sequential seed values
+        """
+        seeds = []
+        
+        with self.__class__._lock:
+            current_seed = self.__class__._last_seed
+            
+            for i in range(batch_count):
+                if mode == 'increment':
+                    new_seed = current_seed + 1
+                else:  # decrement
+                    new_seed = current_seed - 1
+                
+                # Handle overflow for each step
+                final_seed = self._handle_overflow(new_seed, current_seed, mode, overflow_behavior)
+                seeds.append(final_seed)
+                current_seed = final_seed
+            
+            # Update the class state with the final seed
+            self.__class__._last_seed = current_seed
+        
+        return seeds
+    
+    def _select_optimal_backend(self, use_torch_backend: str, batch_size: int = 1) -> str:
+        """
+        Select the optimal backend based on preference and batch size.
+        
+        Args:
+            use_torch_backend (str): User preference - "auto", "random", or "torch"
+            batch_size (int): Number of seeds to generate
+            
+        Returns:
+            str: Selected backend - "random" or "torch"
+        """
+        if use_torch_backend == "random":
+            return "random"
+        elif use_torch_backend == "torch":
+            return "torch"
+        else:  # "auto"
+            # Auto-select based on batch size and PyTorch availability
+            if batch_size >= 1000 and torch.cuda.is_available():
+                return "torch"
+            elif batch_size >= 100:  # Large batches benefit from torch even on CPU
+                return "torch"
+            else:
+                return "random"
     
     def _handle_overflow(self, new_seed: int, current_seed: int, operation: str, overflow_behavior: str) -> int:
         """
@@ -380,7 +583,7 @@ class AdvancedSeedGenerator:
         return errors
 
     @classmethod
-    def IS_CHANGED(cls, mode: str, seed: int, sync_libraries: bool, deterministic: bool, overflow_behavior: str = "wrap") -> Union[float, str]:
+    def IS_CHANGED(cls, mode: str, seed: int, sync_libraries: bool, deterministic: bool, overflow_behavior: str = "wrap", use_torch_backend: str = "auto", batch_count: int = 1) -> Union[float, str]:
         """
         Force re-execution for modes that should produce a new result on each run.
         
@@ -392,6 +595,8 @@ class AdvancedSeedGenerator:
             sync_libraries (bool): Whether libraries are synchronized
             deterministic (bool): Whether deterministic mode is enabled
             overflow_behavior (str): How to handle overflow (affects caching for increment/decrement)
+            use_torch_backend (str): Backend preference for random generation
+            batch_count (int): Number of seeds to generate
             
         Returns:
             Union[float, str]: Unique value to force re-execution for dynamic modes,
@@ -407,8 +612,8 @@ class AdvancedSeedGenerator:
                     logger.debug(f"IS_CHANGED: {timestamp} for dynamic mode '{mode}'")
                 return timestamp
             else:
-                # For fixed mode, return a stable cache key including overflow behavior
-                cache_key = f"fixed_{seed}_{sync_libraries}_{deterministic}_{overflow_behavior}"
+                # For fixed mode, return a stable cache key including all parameters
+                cache_key = f"fixed_{seed}_{sync_libraries}_{deterministic}_{overflow_behavior}_{use_torch_backend}_{batch_count}"
                 logger = cls._get_logger()
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(f"IS_CHANGED: '{cache_key}' for static mode '{mode}'")
@@ -448,7 +653,7 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "AdvancedSeedGenerator": "Advanced Seed Generator"
+    "AdvancedSeedGenerator": "🎲 Advanced Seed Generator"
 }
 
 # Export for module-level access
